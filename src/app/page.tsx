@@ -16,6 +16,9 @@ export default async function Home() {
       <form action={signOut}>
         <button type="submit">Se déconnecter</button>
       </form>
+      <p>
+        <Link href="/memory">Ma mémoire</Link>
+      </p>
       <NewConversationButton />
       {error ? <p role="alert">Impossible de charger les conversations.</p> : null}
       <ul>

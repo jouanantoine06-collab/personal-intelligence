@@ -14,6 +14,15 @@ export const memoryTypeSchema = z.enum([
 ]);
 export type MemoryType = z.infer<typeof memoryTypeSchema>;
 
+export const memoryStatusSchema = z.enum([
+  "proposed",
+  "active",
+  "superseded",
+  "expired",
+  "deleted",
+]);
+export type MemoryStatusValue = z.infer<typeof memoryStatusSchema>;
+
 const profilSchema = z.object({ key: z.string().min(1), value: z.string().min(1) });
 const projetSchema = z.object({
   project_name: z.string().min(1),

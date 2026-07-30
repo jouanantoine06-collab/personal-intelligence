@@ -74,3 +74,25 @@ export async function upsertContextState(
     throw new Error(`Écriture du context_state impossible: ${error.message}`);
   }
 }
+
+// Retire une confirmation en attente du focus conversationnel, quel que soit le
+// chemin qui l'a résolue (chat ou interface de gestion mémoire). Nécessaire pour
+// que les deux chemins restent cohérents : sans ça, l'Orchestrateur pourrait
+// tenter de résoudre, lors d'un futur tour de chat, une proposition déjà traitée
+// depuis l'interface de gestion mémoire.
+export async function clearPendingConfirmation(
+  supabase: SupabaseClient<Database>,
+  userId: string,
+  memoryItemId: string,
+): Promise<void> {
+  const state = await getContextState(supabase, userId);
+  const filtered = state.pendingConfirmations.filter(
+    (p) => p.memoryItemId !== memoryItemId,
+  );
+
+  if (filtered.length === state.pendingConfirmations.length) {
+    return;
+  }
+
+  await upsertContextState(supabase, { ...state, pendingConfirmations: filtered });
+}

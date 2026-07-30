@@ -47,6 +47,7 @@ export interface Database {
           user_id: string;
           role: MessageRole;
           content: string;
+          turn_id: string | null;
           created_at: string;
         };
         Insert: {
@@ -55,6 +56,7 @@ export interface Database {
           user_id: string;
           role: MessageRole;
           content: string;
+          turn_id?: string | null;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["messages"]["Insert"]>;

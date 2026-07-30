@@ -26,7 +26,23 @@ Le schéma initial se trouve dans `supabase/migrations/`. À appliquer via le CL
 
 Authentification (email/mot de passe), création de conversation, envoi/réception de messages, mémorisation explicite avec confirmation obligatoire (ADR-0008), récupération de mémoire par filtrage structuré (ADR-0009), journalisation de toutes les décisions. Voir `src/core/` pour l'implémentation de l'Orchestrateur, du Context Engine, du Memory Engine, de l'AI Provider et de l'Audit Journal.
 
-Non inclus dans cette tranche (hors scope demandé) : Permission Gate et Tool Executor (aucun outil réel dans ce périmètre), interface de consultation/suppression de la mémoire, mise à jour automatique du focus (`active_project_id`).
+Non inclus dans cette tranche (hors scope demandé) : Permission Gate et Tool Executor (aucun outil réel dans ce périmètre), mise à jour automatique du focus (`active_project_id`).
+
+## Deuxième tranche verticale (contrôle utilisateur de la mémoire)
+
+Interface complète `/memory` : liste filtrable (type/projet/statut/recherche plein texte), propositions en attente (accepter/modifier/refuser), page de détail par souvenir (provenance, message d'origine, chaîne de supersession), correction (édition en place pour une proposition, nouvelle version + supersession pour un souvenir actif), suppression (soft-delete). Voir `src/core/memory-engine/index.ts` (nouvelles fonctions) et `src/core/memory-engine/errors.ts` (garde-fous de transition d'état).
+
+### Tests d'intégration RLS/isolation
+
+`src/core/memory-engine/memory-management.integration.test.ts` nécessite un vrai projet Supabase (local via `supabase start`, ou un projet distant dédié aux tests) — jamais un projet de production, ce fichier crée et supprime de vrais utilisateurs de test. Variables requises :
+
+```
+SUPABASE_TEST_URL=...
+SUPABASE_TEST_ANON_KEY=...
+SUPABASE_TEST_SERVICE_ROLE_KEY=...
+```
+
+Sans ces variables, la suite est automatiquement ignorée (`describe.skipIf`) — c'est le cas dans cet environnement de développement.
 
 ```
 npm run typecheck

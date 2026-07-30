@@ -17,6 +17,7 @@ import {
   retrieveRelevantMemories,
 } from "@/core/memory-engine/index";
 import { flagMemoryCandidateToolInputSchema } from "@/core/memory-engine/schemas";
+import { MemoryStateConflictError } from "@/core/memory-engine/errors";
 import { resolvePendingConfirmation } from "@/core/orchestrator/confirmation";
 import { buildSystemPrompt } from "@/core/orchestrator/system-prompt";
 
@@ -66,6 +67,7 @@ export async function runTurn(
       user_id: userId,
       role: "user",
       content: userMessageText,
+      turn_id: turnId,
     });
     if (insertUserMessageError) {
       throw new Error(`Écriture du message utilisateur impossible: ${insertUserMessageError.message}`);
@@ -80,27 +82,44 @@ export async function runTurn(
         userMessage: userMessageText,
       });
 
-      if (outcome === "confirm") {
-        await confirmMemory(supabase, pending.memoryItemId);
-        await recordAuditEvent(supabase, {
-          userId,
-          turnId,
-          eventType: "memory_confirmed",
-          payload: { memoryItemId: pending.memoryItemId },
-        });
-        confirmationOutcomeNote = `Le souvenir "${pending.content}" vient d'être confirmé et mémorisé. Accuse-en réception naturellement.`;
-        contextState.pendingConfirmations = contextState.pendingConfirmations.filter(
-          (p) => p.memoryItemId !== pending.memoryItemId,
-        );
-      } else if (outcome === "reject") {
-        await rejectMemory(supabase, pending.memoryItemId);
-        await recordAuditEvent(supabase, {
-          userId,
-          turnId,
-          eventType: "memory_rejected",
-          payload: { memoryItemId: pending.memoryItemId },
-        });
-        confirmationOutcomeNote = `La proposition "${pending.content}" a été refusée et n'a pas été mémorisée. Accuse-en réception naturellement.`;
+      if (outcome === "confirm" || outcome === "reject") {
+        try {
+          if (outcome === "confirm") {
+            await confirmMemory(supabase, userId, pending.memoryItemId);
+            await recordAuditEvent(supabase, {
+              userId,
+              turnId,
+              eventType: "memory_confirmed",
+              payload: { memoryItemId: pending.memoryItemId, source: "chat" },
+            });
+            confirmationOutcomeNote = `Le souvenir "${pending.content}" vient d'être confirmé et mémorisé. Accuse-en réception naturellement.`;
+          } else {
+            await rejectMemory(supabase, userId, pending.memoryItemId);
+            await recordAuditEvent(supabase, {
+              userId,
+              turnId,
+              eventType: "memory_rejected",
+              payload: { memoryItemId: pending.memoryItemId, source: "chat" },
+            });
+            confirmationOutcomeNote = `La proposition "${pending.content}" a été refusée et n'a pas été mémorisée. Accuse-en réception naturellement.`;
+          }
+        } catch (conflictError) {
+          if (conflictError instanceof MemoryStateConflictError) {
+            // Déjà résolue entretemps depuis l'interface de gestion mémoire — pas
+            // un échec de tour, juste un état à nettoyer côté conversationnel.
+            await recordAuditEvent(supabase, {
+              userId,
+              turnId,
+              eventType: "memory_confirmation_deferred",
+              payload: {
+                memoryItemId: pending.memoryItemId,
+                reason: "already_resolved_elsewhere",
+              },
+            });
+          } else {
+            throw conflictError;
+          }
+        }
         contextState.pendingConfirmations = contextState.pendingConfirmations.filter(
           (p) => p.memoryItemId !== pending.memoryItemId,
         );
@@ -228,6 +247,7 @@ export async function runTurn(
       user_id: userId,
       role: "assistant",
       content: finalText,
+      turn_id: turnId,
     });
     if (insertAssistantMessageError) {
       throw new Error(
