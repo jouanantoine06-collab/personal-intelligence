@@ -23,7 +23,12 @@ export type AuditEventType =
   | "tool_permission_denied"
   | "tool_permission_expired"
   | "tool_executed"
-  | "tool_execution_failed";
+  | "tool_execution_failed"
+  | "oauth_connect_started"
+  | "oauth_connected"
+  | "oauth_connection_error"
+  | "oauth_disconnected"
+  | "oauth_token_refreshed";
 
 export async function recordAuditEvent(
   supabase: SupabaseClient<Database>,

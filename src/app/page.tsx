@@ -19,6 +19,9 @@ export default async function Home() {
       <p>
         <Link href="/memory">Ma mémoire</Link>
       </p>
+      <p>
+        <Link href="/integrations">Intégrations</Link>
+      </p>
       <NewConversationButton />
       {error ? <p role="alert">Impossible de charger les conversations.</p> : null}
       <ul>

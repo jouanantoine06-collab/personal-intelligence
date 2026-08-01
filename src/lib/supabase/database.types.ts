@@ -17,6 +17,7 @@ export type MemoryStatus = "proposed" | "active" | "superseded" | "expired" | "d
 export type MessageRole = "user" | "assistant";
 export type ToolRiskLevel = "no_risk" | "reversible" | "external" | "sensitive";
 export type ToolPermissionScope = "session" | "always";
+export type GoogleCalendarConnectionStatus = "active" | "error";
 
 export interface Database {
   __InternalSupabase: {
@@ -192,6 +193,34 @@ export interface Database {
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["internal_notes"]["Insert"]>;
+        Relationships: [];
+      };
+      google_calendar_connections: {
+        Row: {
+          id: string;
+          user_id: string;
+          encrypted_access_token: string;
+          encrypted_refresh_token: string;
+          token_expires_at: string;
+          granted_scopes: string;
+          status: GoogleCalendarConnectionStatus;
+          last_error: string | null;
+          connected_at: string;
+          last_refreshed_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          encrypted_access_token: string;
+          encrypted_refresh_token: string;
+          token_expires_at: string;
+          granted_scopes: string;
+          status?: GoogleCalendarConnectionStatus;
+          last_error?: string | null;
+          connected_at?: string;
+          last_refreshed_at?: string | null;
+        };
+        Update: Partial<Database["public"]["Tables"]["google_calendar_connections"]["Insert"]>;
         Relationships: [];
       };
     };

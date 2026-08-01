@@ -82,6 +82,53 @@ export function createFakeSupabase(initialData: Record<string, Row[]> = {}) {
           };
           return builder;
         },
+        update(payload: Row) {
+          const filters: Record<string, unknown> = {};
+          const builder = {
+            eq(column: string, value: unknown) {
+              filters[column] = value;
+              return builder;
+            },
+            then(resolve: (value: { data: null; error: null }) => void) {
+              for (const row of rows) {
+                if (matches(row, filters)) Object.assign(row, payload);
+              }
+              resolve({ data: null, error: null });
+            },
+          };
+          return builder;
+        },
+        delete() {
+          const filters: Record<string, unknown> = {};
+          const builder = {
+            eq(column: string, value: unknown) {
+              filters[column] = value;
+              return builder;
+            },
+            then(resolve: (value: { data: null; error: null }) => void) {
+              const remaining = rows.filter((r) => !matches(r, filters));
+              rows.length = 0;
+              rows.push(...remaining);
+              resolve({ data: null, error: null });
+            },
+          };
+          return builder;
+        },
+        upsert(payload: Row, options?: { onConflict?: string }) {
+          const conflictColumn = options?.onConflict ?? "id";
+          const conflictValue = payload[conflictColumn];
+          const existing = rows.find((r) => r[conflictColumn] === conflictValue);
+          if (existing) {
+            Object.assign(existing, payload);
+          } else {
+            rows.push({ id: `generated-${table}-${rows.length}`, ...payload });
+          }
+          return {
+            then(resolve: (value: { data: null; error: null }) => void) {
+              resolve({ data: null, error: null });
+            },
+          };
+        },
       };
     },
     _tables: tables,
