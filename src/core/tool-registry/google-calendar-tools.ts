@@ -1,6 +1,9 @@
-// Outils Google Calendar en lecture (V1.3b) : list_calendar_events et
-// get_calendar_event, tous deux "no_risk" (jamais de confirmation). La
-// création (create_calendar_event) reste hors périmètre — V1.3c.
+// Outils Google Calendar : list_calendar_events / get_calendar_event
+// (V1.3b, "no_risk", jamais de confirmation) et create_calendar_event
+// (V1.3c, "external" — confirmation toujours obligatoire, via le mécanisme
+// générique déjà existant depuis V1.1/V1.2 : aucun changement de Permission
+// Gate ni de Tool Executor n'est nécessaire, "external" y est déjà traité
+// exactement comme "reversible").
 //
 // Ces outils utilisent le client Supabase PRIVILÉGIÉ (ADR-0014), jamais le
 // client de session reçu dans ToolExecutionContext : ils n'en ont pas besoin
@@ -8,6 +11,7 @@
 import { z } from "zod";
 import { registerTool, type ToolDefinition } from "@/core/tool-registry/index";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
+import { isValidIanaTimezone } from "@/lib/timezone";
 import {
   ensureFreshAccessToken,
   markConnectionError,
@@ -15,6 +19,7 @@ import {
 import {
   type CalendarEventDetail,
   type CalendarEventSummary,
+  createCalendarEvent,
   getCalendarEvent,
   GoogleCalendarApiError,
   listCalendarEvents,
@@ -126,7 +131,111 @@ const getCalendarEventTool: ToolDefinition<
   },
 };
 
+// Date seule (jour entier), jamais un horodatage — évite qu'un événement
+// journée entière transporte une heure/offset qui n'a pas de sens pour lui.
+const dateOnly = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Format attendu : YYYY-MM-DD (jour entier, sans heure).");
+
+const ianaTimezoneSchema = z
+  .string()
+  .refine(isValidIanaTimezone, { message: "Fuseau horaire IANA invalide (ex: Europe/Paris)." });
+
+const commonCreateEventFields = {
+  title: z.string().min(1).max(200),
+  timezone: ianaTimezoneSchema,
+  location: z.string().max(500).optional(),
+  description: z.string().max(2000).optional(),
+};
+
+// Discriminée sur allDay : un événement horaire exige un ISO 8601 avec
+// offset explicite pour chaque borne ; un événement journée entière exige
+// une date seule. endDateTime y est TOUJOURS inclusif (le dernier jour réel)
+// — la conversion vers la convention exclusive de Google se fait uniquement
+// dans createCalendarEvent, jamais imposée à l'appelant.
+const createEventInputSchema = z
+  .discriminatedUnion("allDay", [
+    z
+      .object({
+        allDay: z.literal(false),
+        startDateTime: isoDateTimeWithOffset,
+        endDateTime: isoDateTimeWithOffset,
+        ...commonCreateEventFields,
+      })
+      .strict(),
+    z
+      .object({
+        allDay: z.literal(true),
+        startDateTime: dateOnly,
+        endDateTime: dateOnly,
+        ...commonCreateEventFields,
+      })
+      .strict(),
+  ])
+  .superRefine((data, ctx) => {
+    const outOfOrder = data.allDay
+      ? data.endDateTime < data.startDateTime
+      : new Date(data.endDateTime).getTime() <= new Date(data.startDateTime).getTime();
+
+    if (outOfOrder) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: data.allDay
+          ? "endDateTime (dernier jour inclus) ne peut pas précéder startDateTime."
+          : "endDateTime doit être strictement postérieur à startDateTime.",
+        path: ["endDateTime"],
+      });
+    }
+  });
+
+const createCalendarEventTool: ToolDefinition<
+  z.infer<typeof createEventInputSchema>,
+  { event: CalendarEventDetail }
+> = {
+  name: "create_calendar_event",
+  description:
+    "Crée un nouvel événement dans le Google Calendar de l'utilisateur. Action à RISQUE EXTERNE : une confirmation explicite de l'utilisateur est TOUJOURS exigée avant exécution (une fois / session / toujours) — n'appelle cet outil qu'après avoir présenté un résumé clair (titre, date, heure de début, heure de fin ou durée, fuseau horaire, lieu éventuel) et obtenu une confirmation explicite. N'invente jamais une date, une heure ou une durée manquante ou ambiguë : demande une clarification honnête plutôt que de deviner.",
+  riskLevel: "external",
+  requiredPermission: "create_calendar_event",
+  aiInputSchema: {
+    type: "object",
+    properties: {
+      title: { type: "string", description: "Titre de l'événement." },
+      allDay: {
+        type: "boolean",
+        description: "true pour un événement journée entière, false pour un événement avec horaires précis.",
+      },
+      startDateTime: {
+        type: "string",
+        description:
+          "Si allDay=false : ISO 8601 avec offset explicite (ex: 2026-08-02T15:00:00+02:00). Si allDay=true : date seule YYYY-MM-DD (premier jour).",
+      },
+      endDateTime: {
+        type: "string",
+        description:
+          "Si allDay=false : ISO 8601 avec offset explicite, strictement après startDateTime. Si allDay=true : date seule YYYY-MM-DD, DERNIER JOUR INCLUS (un événement d'un seul jour a startDateTime = endDateTime).",
+      },
+      timezone: {
+        type: "string",
+        description: "Identifiant de fuseau horaire IANA (ex: Europe/Paris) — jamais un simple offset.",
+      },
+      location: { type: "string", description: "Lieu (optionnel)." },
+      description: { type: "string", description: "Description (optionnelle)." },
+    },
+    required: ["title", "allDay", "startDateTime", "endDateTime", "timezone"],
+    additionalProperties: false,
+  },
+  parseInput: (raw) => createEventInputSchema.parse(raw),
+  async execute(input, { userId }) {
+    const event = await withGoogleCalendarErrorHandling(userId, (accessToken) =>
+      createCalendarEvent(accessToken, input),
+    );
+    return { event };
+  },
+};
+
 export function registerGoogleCalendarTools(): void {
   registerTool(listCalendarEventsTool as ToolDefinition);
   registerTool(getCalendarEventTool as ToolDefinition);
+  registerTool(createCalendarEventTool as ToolDefinition);
 }

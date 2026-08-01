@@ -16,6 +16,15 @@ const testEnv = {
   SUPABASE_TEST_URL: env.NEXT_PUBLIC_SUPABASE_URL,
   SUPABASE_TEST_ANON_KEY: env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
   SUPABASE_TEST_SERVICE_ROLE_KEY: env.SUPABASE_SERVICE_ROLE_KEY,
+  // V1.3c : certains tests d'intégration exercent le vrai code applicatif
+  // (createServiceRoleClient, token-cipher, client OAuth Google), qui lit ces
+  // variables directement — pas seulement les SUPABASE_TEST_* ci-dessus.
+  NEXT_PUBLIC_SUPABASE_URL: env.NEXT_PUBLIC_SUPABASE_URL,
+  SUPABASE_SERVICE_ROLE_KEY: env.SUPABASE_SERVICE_ROLE_KEY,
+  OAUTH_TOKEN_ENCRYPTION_KEY: env.OAUTH_TOKEN_ENCRYPTION_KEY,
+  GOOGLE_OAUTH_CLIENT_ID: env.GOOGLE_OAUTH_CLIENT_ID,
+  GOOGLE_OAUTH_CLIENT_SECRET: env.GOOGLE_OAUTH_CLIENT_SECRET,
+  APP_URL: env.APP_URL,
 };
 
 const patterns = process.argv.slice(2);

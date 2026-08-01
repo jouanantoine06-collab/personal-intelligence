@@ -59,15 +59,33 @@ interface RawGoogleEvent {
   attendees?: { email: string; responseStatus: string }[];
 }
 
+function shiftDateOnly(dateOnly: string, deltaDays: number): string {
+  const [year, month, day] = dateOnly.split("-").map(Number);
+  const shifted = new Date(Date.UTC(year as number, (month as number) - 1, (day as number) + deltaDays));
+  return shifted.toISOString().slice(0, 10);
+}
+
 function parseEventTime(part: RawGoogleEventTime | undefined): { value: string; isAllDay: boolean } {
   if (part?.dateTime) return { value: part.dateTime, isAllDay: false };
   if (part?.date) return { value: part.date, isAllDay: true };
   return { value: "", isAllDay: false };
 }
 
+// Google stocke la date de fin d'un événement journée entière de façon
+// EXCLUSIVE (le lendemain du dernier jour réel) — un détail d'implémentation
+// de l'API, pas la façon dont un humain pense sa propre fin d'événement. On
+// ramène ici systématiquement à une date de fin INCLUSIVE (le dernier jour
+// réel), pour que list/get/create restent cohérents entre eux et avec ce
+// qu'un utilisateur attend en lisant "fin : tel jour".
+function parseEventEndTime(part: RawGoogleEventTime | undefined): { value: string; isAllDay: boolean } {
+  if (part?.dateTime) return { value: part.dateTime, isAllDay: false };
+  if (part?.date) return { value: shiftDateOnly(part.date, -1), isAllDay: true };
+  return { value: "", isAllDay: false };
+}
+
 function toSummary(raw: RawGoogleEvent): CalendarEventSummary {
   const start = parseEventTime(raw.start);
-  const end = parseEventTime(raw.end);
+  const end = parseEventEndTime(raw.end);
   return {
     id: raw.id,
     summary: raw.summary ?? null,
@@ -108,6 +126,58 @@ export async function getCalendarEvent(
   const url = `${CALENDAR_API_BASE}/calendars/primary/events/${encodeURIComponent(eventId)}`;
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!response.ok) {
+    throw await parseCalendarErrorResponse(response);
+  }
+
+  const raw = (await response.json()) as RawGoogleEvent;
+  return {
+    ...toSummary(raw),
+    description: raw.description ?? null,
+    attendees: (raw.attendees ?? []).map((a) => ({ email: a.email, responseStatus: a.responseStatus })),
+    htmlLink: raw.htmlLink ?? null,
+  };
+}
+
+export interface CreateCalendarEventInput {
+  title: string;
+  location?: string | null;
+  description?: string | null;
+  timezone: string;
+  allDay: boolean;
+  // Horaire (allDay=false) : ISO 8601 avec offset explicite.
+  // Journée entière (allDay=true) : "YYYY-MM-DD", endDateTime INCLUSIVE (le
+  // dernier jour réel de l'événement — la conversion vers le format exclusif
+  // attendu par Google est faite ici, jamais laissée à l'appelant).
+  startDateTime: string;
+  endDateTime: string;
+}
+
+export async function createCalendarEvent(
+  accessToken: string,
+  input: CreateCalendarEventInput,
+): Promise<CalendarEventDetail> {
+  const body = {
+    summary: input.title,
+    location: input.location ?? undefined,
+    description: input.description ?? undefined,
+    start: input.allDay
+      ? { date: input.startDateTime }
+      : { dateTime: input.startDateTime, timeZone: input.timezone },
+    end: input.allDay
+      ? { date: shiftDateOnly(input.endDateTime, 1) }
+      : { dateTime: input.endDateTime, timeZone: input.timezone },
+  };
+
+  const response = await fetch(`${CALENDAR_API_BASE}/calendars/primary/events`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {

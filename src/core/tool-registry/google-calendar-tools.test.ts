@@ -7,7 +7,7 @@ import {
   GoogleCalendarReconnectRequiredError,
   markConnectionError,
 } from "@/core/google-calendar/connections";
-import { getCalendarEvent, listCalendarEvents } from "@/core/google-calendar/api";
+import { createCalendarEvent, getCalendarEvent, listCalendarEvents } from "@/core/google-calendar/api";
 
 vi.mock("@/lib/supabase/service-role", () => ({
   createServiceRoleClient: vi.fn(() => ({})),
@@ -27,6 +27,7 @@ vi.mock("@/core/google-calendar/api", async () => {
     ...actual,
     listCalendarEvents: vi.fn(),
     getCalendarEvent: vi.fn(),
+    createCalendarEvent: vi.fn(),
   };
 });
 
@@ -111,6 +112,319 @@ describe("get_calendar_event — schéma d'entrée", () => {
   it("refuse un eventId vide ou absent", () => {
     expect(() => tool.parseInput({ eventId: "" })).toThrow();
     expect(() => tool.parseInput({})).toThrow();
+  });
+});
+
+describe("create_calendar_event — schéma d'entrée", () => {
+  const tool = getTool("create_calendar_event")!;
+
+  it("est classé external (confirmation toujours obligatoire)", () => {
+    expect(tool.riskLevel).toBe("external");
+  });
+
+  it("accepte un événement horaire valide", () => {
+    expect(() =>
+      tool.parseInput({
+        title: "Dentiste",
+        allDay: false,
+        startDateTime: "2026-08-02T15:00:00+02:00",
+        endDateTime: "2026-08-02T16:00:00+02:00",
+        timezone: "Europe/Paris",
+      }),
+    ).not.toThrow();
+  });
+
+  it("accepte un événement journée entière valide (endDateTime inclusif)", () => {
+    expect(() =>
+      tool.parseInput({
+        title: "Anniversaire de maman",
+        allDay: true,
+        startDateTime: "2026-08-08",
+        endDateTime: "2026-08-08",
+        timezone: "Europe/Paris",
+      }),
+    ).not.toThrow();
+  });
+
+  it("accepte lieu et description optionnels", () => {
+    expect(() =>
+      tool.parseInput({
+        title: "Réunion Verdict",
+        allDay: false,
+        startDateTime: "2026-08-07T09:00:00+02:00",
+        endDateTime: "2026-08-07T11:00:00+02:00",
+        timezone: "Europe/Paris",
+        location: "Bureau",
+        description: "Point d'avancement",
+      }),
+    ).not.toThrow();
+  });
+
+  it("refuse un événement horaire sans offset explicite", () => {
+    expect(() =>
+      tool.parseInput({
+        title: "Dentiste",
+        allDay: false,
+        startDateTime: "2026-08-02T15:00:00",
+        endDateTime: "2026-08-02T16:00:00",
+        timezone: "Europe/Paris",
+      }),
+    ).toThrow();
+  });
+
+  it("refuse un fuseau horaire invalide (offset fixe ou chaîne arbitraire)", () => {
+    expect(() =>
+      tool.parseInput({
+        title: "Dentiste",
+        allDay: false,
+        startDateTime: "2026-08-02T15:00:00+02:00",
+        endDateTime: "2026-08-02T16:00:00+02:00",
+        timezone: "+02:00",
+      }),
+    ).toThrow();
+    expect(() =>
+      tool.parseInput({
+        title: "Dentiste",
+        allDay: false,
+        startDateTime: "2026-08-02T15:00:00+02:00",
+        endDateTime: "2026-08-02T16:00:00+02:00",
+        timezone: "n'importe quoi",
+      }),
+    ).toThrow();
+  });
+
+  it("refuse une fin antérieure ou égale au début pour un événement horaire", () => {
+    expect(() =>
+      tool.parseInput({
+        title: "Dentiste",
+        allDay: false,
+        startDateTime: "2026-08-02T16:00:00+02:00",
+        endDateTime: "2026-08-02T15:00:00+02:00",
+        timezone: "Europe/Paris",
+      }),
+    ).toThrow();
+    expect(() =>
+      tool.parseInput({
+        title: "Dentiste",
+        allDay: false,
+        startDateTime: "2026-08-02T15:00:00+02:00",
+        endDateTime: "2026-08-02T15:00:00+02:00",
+        timezone: "Europe/Paris",
+      }),
+    ).toThrow(/postérieur/);
+  });
+
+  it("refuse une fin antérieure au début pour un événement journée entière", () => {
+    expect(() =>
+      tool.parseInput({
+        title: "Voyage",
+        allDay: true,
+        startDateTime: "2026-08-10",
+        endDateTime: "2026-08-08",
+        timezone: "Europe/Paris",
+      }),
+    ).toThrow(/inclus/);
+  });
+
+  it("refuse une expression relative dans startDateTime/endDateTime", () => {
+    expect(() =>
+      tool.parseInput({
+        title: "Dentiste",
+        allDay: false,
+        startDateTime: "demain",
+        endDateTime: "demain plus tard",
+        timezone: "Europe/Paris",
+      }),
+    ).toThrow();
+  });
+
+  it("refuse une durée manquante (endDateTime absent) plutôt que de la déduire silencieusement", () => {
+    expect(() =>
+      tool.parseInput({
+        title: "Dentiste",
+        allDay: false,
+        startDateTime: "2026-08-02T15:00:00+02:00",
+        timezone: "Europe/Paris",
+      }),
+    ).toThrow();
+  });
+
+  it("refuse un fuseau horaire absent", () => {
+    expect(() =>
+      tool.parseInput({
+        title: "Dentiste",
+        allDay: false,
+        startDateTime: "2026-08-02T15:00:00+02:00",
+        endDateTime: "2026-08-02T16:00:00+02:00",
+      }),
+    ).toThrow();
+  });
+
+  it("refuse un événement horaire sans titre", () => {
+    expect(() =>
+      tool.parseInput({
+        title: "",
+        allDay: false,
+        startDateTime: "2026-08-02T15:00:00+02:00",
+        endDateTime: "2026-08-02T16:00:00+02:00",
+        timezone: "Europe/Paris",
+      }),
+    ).toThrow();
+  });
+
+  it("refuse un champ additionnel non prévu", () => {
+    expect(() =>
+      tool.parseInput({
+        title: "Dentiste",
+        allDay: false,
+        startDateTime: "2026-08-02T15:00:00+02:00",
+        endDateTime: "2026-08-02T16:00:00+02:00",
+        timezone: "Europe/Paris",
+        extra: "non prévu",
+      }),
+    ).toThrow();
+  });
+
+  it("refuse un mélange de champs journée entière et horaire (date seule avec allDay=false)", () => {
+    expect(() =>
+      tool.parseInput({
+        title: "Dentiste",
+        allDay: false,
+        startDateTime: "2026-08-02",
+        endDateTime: "2026-08-02T16:00:00+02:00",
+        timezone: "Europe/Paris",
+      }),
+    ).toThrow();
+  });
+});
+
+describe("create_calendar_event — exécution", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("appelle createCalendarEvent avec le token de l'utilisateur et le payload figé", async () => {
+    const tool = getTool("create_calendar_event")!;
+    vi.mocked(ensureFreshAccessToken).mockResolvedValue("token-a");
+    vi.mocked(createCalendarEvent).mockResolvedValue({
+      id: "evt-new",
+      summary: "Dentiste",
+      start: "2026-08-02T15:00:00+02:00",
+      end: "2026-08-02T16:00:00+02:00",
+      isAllDay: false,
+      location: null,
+      description: null,
+      attendees: [],
+      htmlLink: null,
+    });
+
+    const input = tool.parseInput({
+      title: "Dentiste",
+      allDay: false,
+      startDateTime: "2026-08-02T15:00:00+02:00",
+      endDateTime: "2026-08-02T16:00:00+02:00",
+      timezone: "Europe/Paris",
+    });
+
+    const result = await tool.execute(input, { supabase: {} as never, userId: "user-a" });
+
+    expect(ensureFreshAccessToken).toHaveBeenCalledWith(expect.anything(), "user-a");
+    expect(createCalendarEvent).toHaveBeenCalledWith("token-a", input);
+    expect((result as { event: { id: string } }).event.id).toBe("evt-new");
+  });
+
+  it("deux utilisateurs différents utilisent chacun leur propre token, jamais celui de l'autre", async () => {
+    const tool = getTool("create_calendar_event")!;
+    vi.mocked(ensureFreshAccessToken).mockImplementation(async (_client, userId) =>
+      userId === "user-a" ? "token-a" : "token-b",
+    );
+    vi.mocked(createCalendarEvent).mockResolvedValue({
+      id: "evt-new",
+      summary: "Test",
+      start: "2026-08-02T15:00:00+02:00",
+      end: "2026-08-02T16:00:00+02:00",
+      isAllDay: false,
+      location: null,
+      description: null,
+      attendees: [],
+      htmlLink: null,
+    });
+
+    const input = tool.parseInput({
+      title: "Test",
+      allDay: false,
+      startDateTime: "2026-08-02T15:00:00+02:00",
+      endDateTime: "2026-08-02T16:00:00+02:00",
+      timezone: "Europe/Paris",
+    });
+
+    await tool.execute(input, { supabase: {} as never, userId: "user-a" });
+    await tool.execute(input, { supabase: {} as never, userId: "user-b" });
+
+    expect(vi.mocked(createCalendarEvent).mock.calls[0]?.[0]).toBe("token-a");
+    expect(vi.mocked(createCalendarEvent).mock.calls[1]?.[0]).toBe("token-b");
+  });
+
+  it("propage l'erreur de reconnexion sans jamais appeler createCalendarEvent si aucune connexion n'existe", async () => {
+    const tool = getTool("create_calendar_event")!;
+    vi.mocked(ensureFreshAccessToken).mockRejectedValue(
+      new GoogleCalendarReconnectRequiredError("aucune connexion enregistrée"),
+    );
+
+    const input = tool.parseInput({
+      title: "Dentiste",
+      allDay: false,
+      startDateTime: "2026-08-02T15:00:00+02:00",
+      endDateTime: "2026-08-02T16:00:00+02:00",
+      timezone: "Europe/Paris",
+    });
+
+    await expect(
+      tool.execute(input, { supabase: {} as never, userId: "user-a" }),
+    ).rejects.toThrow(GoogleCalendarReconnectRequiredError);
+    expect(createCalendarEvent).not.toHaveBeenCalled();
+  });
+
+  it("marque la connexion en erreur et invite à reconnecter sur un 401 de Google à la création", async () => {
+    const tool = getTool("create_calendar_event")!;
+    vi.mocked(ensureFreshAccessToken).mockResolvedValue("stale-token");
+    vi.mocked(createCalendarEvent).mockRejectedValue(
+      new GoogleCalendarApiError(401, "Invalid Credentials"),
+    );
+
+    const input = tool.parseInput({
+      title: "Dentiste",
+      allDay: false,
+      startDateTime: "2026-08-02T15:00:00+02:00",
+      endDateTime: "2026-08-02T16:00:00+02:00",
+      timezone: "Europe/Paris",
+    });
+
+    await expect(
+      tool.execute(input, { supabase: {} as never, userId: "user-a" }),
+    ).rejects.toThrow(/reconnecte/i);
+    expect(markConnectionError).toHaveBeenCalledWith(expect.anything(), "user-a", expect.any(String));
+  });
+
+  it("une erreur Google autre que 401 (ex: 400 créneau invalide) n'affirme jamais un succès et n'altère pas le statut", async () => {
+    const tool = getTool("create_calendar_event")!;
+    vi.mocked(ensureFreshAccessToken).mockResolvedValue("token-a");
+    vi.mocked(createCalendarEvent).mockRejectedValue(
+      new GoogleCalendarApiError(400, "Invalid time range"),
+    );
+
+    const input = tool.parseInput({
+      title: "Dentiste",
+      allDay: false,
+      startDateTime: "2026-08-02T15:00:00+02:00",
+      endDateTime: "2026-08-02T16:00:00+02:00",
+      timezone: "Europe/Paris",
+    });
+
+    await expect(
+      tool.execute(input, { supabase: {} as never, userId: "user-a" }),
+    ).rejects.toBeInstanceOf(GoogleCalendarApiError);
+    expect(markConnectionError).not.toHaveBeenCalled();
   });
 });
 

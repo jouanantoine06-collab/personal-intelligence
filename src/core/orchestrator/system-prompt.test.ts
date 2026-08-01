@@ -77,3 +77,57 @@ describe("buildSystemPrompt — fuseau horaire et outils calendrier (V1.3b)", ()
     expect(prompt).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}/);
   });
 });
+
+describe("buildSystemPrompt — création d'événement (V1.3c)", () => {
+  it("inclut toujours les instructions de create_calendar_event", () => {
+    const prompt = buildSystemPrompt({
+      relevantMemories: [],
+      contextState: baseContextState(),
+      outcomeNotes: [],
+      pendingToolConfirmations: [],
+    });
+
+    expect(prompt).toContain("create_calendar_event");
+    expect(prompt).toMatch(/Risque EXTERNE/);
+  });
+
+  it("exige un résumé complet avant la demande de confirmation", () => {
+    const prompt = buildSystemPrompt({
+      relevantMemories: [],
+      contextState: baseContextState(),
+      outcomeNotes: [],
+      pendingToolConfirmations: [],
+    });
+
+    expect(prompt).toMatch(/résumé clair et complet/);
+    expect(prompt).toMatch(/titre, date, heure de début, heure de fin/);
+  });
+
+  it("exige de vérifier les chevauchements via list_calendar_events avant de résumer, sans bloquer la création", () => {
+    const prompt = buildSystemPrompt({
+      relevantMemories: [],
+      contextState: baseContextState(),
+      outcomeNotes: [],
+      pendingToolConfirmations: [],
+    });
+
+    expect(prompt).toMatch(/chevauchement/);
+    expect(prompt).toMatch(/ne bloque pas la création/);
+  });
+
+  it("liste explicitement les cas où une clarification est obligatoire plutôt qu'une hypothèse silencieuse", () => {
+    const prompt = buildSystemPrompt({
+      relevantMemories: [],
+      contextState: baseContextState(),
+      outcomeNotes: [],
+      pendingToolConfirmations: [],
+    });
+
+    expect(prompt).toMatch(/l'heure de début manque/);
+    expect(prompt).toMatch(/la durée ou l'heure de fin manque/);
+    expect(prompt).toMatch(/plusieurs dates plausibles/);
+    expect(prompt).toMatch(/tombe dans le passé/);
+    expect(prompt).toMatch(/incohérentes entre elles/);
+    expect(prompt).toMatch(/N'invente et ne suppose jamais silencieusement/);
+  });
+});

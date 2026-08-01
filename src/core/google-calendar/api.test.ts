@@ -1,5 +1,10 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { getCalendarEvent, GoogleCalendarApiError, listCalendarEvents } from "@/core/google-calendar/api";
+import {
+  createCalendarEvent,
+  getCalendarEvent,
+  GoogleCalendarApiError,
+  listCalendarEvents,
+} from "@/core/google-calendar/api";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -78,7 +83,10 @@ describe("Google Calendar API — listCalendarEvents", () => {
       timeMax: "2026-08-10T00:00:00+02:00",
     });
 
-    expect(events[0]).toMatchObject({ isAllDay: true, start: "2026-08-05", end: "2026-08-06" });
+    // Google stocke la fin d'un événement journée entière de façon exclusive
+    // (le lendemain du dernier jour réel) : "2026-08-06" brut redevient
+    // "2026-08-05" une fois ramené à une fin inclusive (V1.3c).
+    expect(events[0]).toMatchObject({ isAllDay: true, start: "2026-08-05", end: "2026-08-05" });
   });
 
   it("retourne une liste vide si Google ne renvoie aucun item", async () => {
@@ -170,5 +178,141 @@ describe("Google Calendar API — getCalendarEvent", () => {
     const call = fetchMock.mock.calls[0];
     if (!call) throw new Error("fetch aurait dû être appelé");
     expect(call[0] as string).toContain(encodeURIComponent("evt with space"));
+  });
+});
+
+describe("Google Calendar API — createCalendarEvent", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("envoie dateTime + timeZone pour un événement horaire", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        id: "new-evt",
+        summary: "Dentiste",
+        start: { dateTime: "2026-08-02T15:00:00+02:00", timeZone: "Europe/Paris" },
+        end: { dateTime: "2026-08-02T16:00:00+02:00", timeZone: "Europe/Paris" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const event = await createCalendarEvent("token", {
+      title: "Dentiste",
+      timezone: "Europe/Paris",
+      allDay: false,
+      startDateTime: "2026-08-02T15:00:00+02:00",
+      endDateTime: "2026-08-02T16:00:00+02:00",
+    });
+
+    expect(event).toMatchObject({ id: "new-evt", start: "2026-08-02T15:00:00+02:00" });
+
+    const call = fetchMock.mock.calls[0];
+    if (!call) throw new Error("fetch aurait dû être appelé");
+    expect(call[0]).toBe("https://www.googleapis.com/calendar/v3/calendars/primary/events");
+    const options = call[1] as { method: string; body: string; headers: Record<string, string> };
+    expect(options.method).toBe("POST");
+    expect(options.headers.Authorization).toBe("Bearer token");
+    const sentBody = JSON.parse(options.body);
+    expect(sentBody).toEqual({
+      summary: "Dentiste",
+      start: { dateTime: "2026-08-02T15:00:00+02:00", timeZone: "Europe/Paris" },
+      end: { dateTime: "2026-08-02T16:00:00+02:00", timeZone: "Europe/Paris" },
+    });
+  });
+
+  it("convertit une fin inclusive en fin exclusive (+1 jour) pour un événement journée entière", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        id: "new-allday",
+        summary: "Anniversaire de maman",
+        start: { date: "2026-08-08" },
+        end: { date: "2026-08-09" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createCalendarEvent("token", {
+      title: "Anniversaire de maman",
+      timezone: "Europe/Paris",
+      allDay: true,
+      startDateTime: "2026-08-08",
+      endDateTime: "2026-08-08", // même jour, inclusif
+    });
+
+    const call = fetchMock.mock.calls[0];
+    if (!call) throw new Error("fetch aurait dû être appelé");
+    const options = call[1] as { body: string };
+    const sentBody = JSON.parse(options.body);
+    expect(sentBody.start).toEqual({ date: "2026-08-08" });
+    expect(sentBody.end).toEqual({ date: "2026-08-09" });
+  });
+
+  it("le résultat retourné reste en fin inclusive, cohérent avec l'entrée", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse(200, {
+          id: "new-allday",
+          summary: "Anniversaire de maman",
+          start: { date: "2026-08-08" },
+          end: { date: "2026-08-09" },
+        }),
+      ),
+    );
+
+    const event = await createCalendarEvent("token", {
+      title: "Anniversaire de maman",
+      timezone: "Europe/Paris",
+      allDay: true,
+      startDateTime: "2026-08-08",
+      endDateTime: "2026-08-08",
+    });
+
+    expect(event).toMatchObject({ start: "2026-08-08", end: "2026-08-08", isAllDay: true });
+  });
+
+  it("omet lieu et description quand ils ne sont pas fournis", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        id: "new-evt",
+        summary: "Réunion",
+        start: { dateTime: "2026-08-02T15:00:00+02:00" },
+        end: { dateTime: "2026-08-02T16:00:00+02:00" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createCalendarEvent("token", {
+      title: "Réunion",
+      timezone: "Europe/Paris",
+      allDay: false,
+      startDateTime: "2026-08-02T15:00:00+02:00",
+      endDateTime: "2026-08-02T16:00:00+02:00",
+    });
+
+    const call = fetchMock.mock.calls[0];
+    if (!call) throw new Error("fetch aurait dû être appelé");
+    const options = call[1] as { body: string };
+    const sentBody = JSON.parse(options.body);
+    expect(sentBody.location).toBeUndefined();
+    expect(sentBody.description).toBeUndefined();
+  });
+
+  it("lève GoogleCalendarApiError en cas d'échec de création", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse(400, { error: { message: "Invalid time range" } })),
+    );
+
+    await expect(
+      createCalendarEvent("token", {
+        title: "Test",
+        timezone: "Europe/Paris",
+        allDay: false,
+        startDateTime: "2026-08-02T16:00:00+02:00",
+        endDateTime: "2026-08-02T15:00:00+02:00",
+      }),
+    ).rejects.toBeInstanceOf(GoogleCalendarApiError);
   });
 });
