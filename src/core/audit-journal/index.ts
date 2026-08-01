@@ -16,7 +16,14 @@ export type AuditEventType =
   | "memory_retrieved"
   | "memory_proposal_edited"
   | "memory_corrected"
-  | "memory_deleted";
+  | "memory_deleted"
+  | "tool_permission_checked"
+  | "tool_permission_requested"
+  | "tool_permission_granted"
+  | "tool_permission_denied"
+  | "tool_permission_expired"
+  | "tool_executed"
+  | "tool_execution_failed";
 
 export async function recordAuditEvent(
   supabase: SupabaseClient<Database>,

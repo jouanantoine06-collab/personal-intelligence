@@ -24,7 +24,15 @@ async function check(label, fn) {
   }
 }
 
-for (const table of ["conversations", "messages", "memory_items", "context_state", "audit_journal"]) {
+for (const table of [
+  "conversations",
+  "messages",
+  "memory_items",
+  "context_state",
+  "audit_journal",
+  "tool_permissions",
+  "internal_notes",
+]) {
   await check(`table ${table} existe`, async () => {
     const { error } = await supabase.from(table).select("*").limit(0);
     if (error) throw new Error(error.message);
@@ -65,6 +73,22 @@ await check("audit_journal: colonnes attendues existent", async () => {
   const { error } = await supabase
     .from("audit_journal")
     .select("id,user_id,turn_id,event_type,payload,created_at")
+    .limit(0);
+  if (error) throw new Error(error.message);
+});
+
+await check("tool_permissions: colonnes attendues existent", async () => {
+  const { error } = await supabase
+    .from("tool_permissions")
+    .select("id,user_id,tool_name,scope,conversation_id,granted_at")
+    .limit(0);
+  if (error) throw new Error(error.message);
+});
+
+await check("internal_notes: colonnes attendues existent", async () => {
+  const { error } = await supabase
+    .from("internal_notes")
+    .select("id,user_id,content,created_at")
     .limit(0);
   if (error) throw new Error(error.message);
 });

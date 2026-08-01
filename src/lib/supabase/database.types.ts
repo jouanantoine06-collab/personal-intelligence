@@ -15,6 +15,8 @@ export type MemorySensitivity = "public" | "normal" | "sensible";
 export type MemoryRetentionPolicy = "permanent" | "expire" | "session_only";
 export type MemoryStatus = "proposed" | "active" | "superseded" | "expired" | "deleted";
 export type MessageRole = "user" | "assistant";
+export type ToolRiskLevel = "no_risk" | "reversible" | "external" | "sensitive";
+export type ToolPermissionScope = "session" | "always";
 
 export interface Database {
   __InternalSupabase: {
@@ -156,15 +158,61 @@ export interface Database {
         Update: Partial<Database["public"]["Tables"]["audit_journal"]["Insert"]>;
         Relationships: [];
       };
+      tool_permissions: {
+        Row: {
+          id: string;
+          user_id: string;
+          tool_name: string;
+          scope: ToolPermissionScope;
+          conversation_id: string | null;
+          granted_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          tool_name: string;
+          scope: ToolPermissionScope;
+          conversation_id?: string | null;
+          granted_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["tool_permissions"]["Insert"]>;
+        Relationships: [];
+      };
+      internal_notes: {
+        Row: {
+          id: string;
+          user_id: string;
+          content: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          content: string;
+          created_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["internal_notes"]["Insert"]>;
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;
   };
 }
 
-export interface PendingConfirmation {
+export interface MemoryProposalPendingConfirmation {
   kind: "memory_proposal";
   memoryItemId: string;
   content: string;
   createdAt: string;
 }
+
+export interface ToolExecutionPendingConfirmation {
+  kind: "tool_execution";
+  toolName: string;
+  rawInput: Record<string, unknown>;
+  riskLevel: ToolRiskLevel;
+  createdAt: string;
+}
+
+export type PendingConfirmation = MemoryProposalPendingConfirmation | ToolExecutionPendingConfirmation;

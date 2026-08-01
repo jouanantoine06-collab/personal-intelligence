@@ -87,7 +87,7 @@ export async function clearPendingConfirmation(
 ): Promise<void> {
   const state = await getContextState(supabase, userId);
   const filtered = state.pendingConfirmations.filter(
-    (p) => p.memoryItemId !== memoryItemId,
+    (p) => !(p.kind === "memory_proposal" && p.memoryItemId === memoryItemId),
   );
 
   if (filtered.length === state.pendingConfirmations.length) {

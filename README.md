@@ -26,7 +26,7 @@ Le schéma initial se trouve dans `supabase/migrations/`. À appliquer via le CL
 
 Authentification (email/mot de passe), création de conversation, envoi/réception de messages, mémorisation explicite avec confirmation obligatoire (ADR-0008), récupération de mémoire par filtrage structuré (ADR-0009), journalisation de toutes les décisions. Voir `src/core/` pour l'implémentation de l'Orchestrateur, du Context Engine, du Memory Engine, de l'AI Provider et de l'Audit Journal.
 
-Non inclus dans cette tranche (hors scope demandé) : Permission Gate et Tool Executor (aucun outil réel dans ce périmètre), mise à jour automatique du focus (`active_project_id`).
+Non inclus dans cette tranche (hors scope demandé) : Permission Gate et Tool Executor (aucun outil réel dans ce périmètre — implémentés en V1.1, voir plus bas), mise à jour automatique du focus (`active_project_id`).
 
 ## Deuxième tranche verticale (contrôle utilisateur de la mémoire)
 
@@ -67,9 +67,22 @@ Provisionnement effectué sur un vrai projet Supabase (migrations 0001+0002 appl
 Non couverts par `npm test` (nécessitent un vrai projet Supabase/Anthropic configuré dans `.env.local`) :
 - `check-schema.mjs` — vérifie que le schéma réel correspond aux migrations.
 - `check-audit-journal.mjs <email>` — affiche les événements journalisés pour un utilisateur.
-- `run-rls-integration-tests.mjs` / `run-concurrency-integration-tests.mjs` — exécutent les suites d'intégration en réutilisant les identifiants du projet de dev comme `SUPABASE_TEST_*` (aucun second projet dédié provisionné).
+- `run-rls-integration-tests.mjs` / `run-concurrency-integration-tests.mjs` / `run-integration-tests.mjs <pattern>` — exécutent les suites d'intégration en réutilisant les identifiants du projet de dev comme `SUPABASE_TEST_*` (aucun second projet dédié provisionné).
 - `e2e-validation.mjs` — parcours navigateur réel (Playwright) : auth, chat avec Claude, mémorisation, confirmation, refus, correction, suppression.
+- `e2e-tools-validation.mjs` — parcours navigateur réel pour les outils (V1.1) : liste/création de notes, cycle d'autorisation once/session/always.
 - `cleanup-test-users.mjs` — supprime les utilisateurs de test créés par ces scripts.
+
+## V1.1 — infrastructure d'outils
+
+Permission Gate, Tool Registry et Tool Executor implémentés pour de vrai (les deux premiers étaient dans l'architecture figée depuis le début mais jamais exercés faute d'outil). Premier outil de démonstration : notes internes (`list_internal_notes` en lecture sans confirmation, `create_internal_note` nécessitant une autorisation une fois/session/toujours). Voir `docs/architecture/tool-system.md` pour le détail, et `docs/decisions/0011-*` / `0012-*` pour les décisions.
+
+Deux bugs réels trouvés et corrigés via tests en conditions réelles (navigateur réel + vrai Claude), au-delà de ce qu'un test scripté aurait pu révéler :
+- un même outil pouvait être rappelé deux fois dans un même tour, empilant deux confirmations distinctes ;
+- une confirmation non résolue immédiatement pouvait être résolue par erreur par un message ultérieur sans rapport, exécutant une ancienne demande à la place de la nouvelle.
+
+Corrigés par un dédoublonnage intra-tour déterministe et une expiration stricte inter-tour (ADR-0012) — limite résiduelle documentée et assumée : le classifieur de résolution peut encore, rarement, mal classer un nouveau sujet ; une amélioration (résolution portée par le modèle principal) est prévue pour une prochaine tranche, sans bloquer celle-ci.
+
+`src/core/orchestrator/tool-flow.integration.test.ts` couvre, contre un vrai Supabase : la chaîne complète, le dédoublonnage, et les 6 scénarios d'expiration (réponse immédiate, négative, aparté, nouveau sujet, confirmation expirée, absence de réponse).
 
 ## Documentation
 

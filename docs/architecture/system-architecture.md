@@ -74,4 +74,4 @@ Voir le tableau des contrats conceptuels dans l'historique de conception (reçoi
 - **Reprise événementielle de l'Orchestrateur** : aujourd'hui strictement synchrone (déclenché uniquement par un message utilisateur). Une reprise déclenchée par un événement externe est un changement de contrat volontairement différé.
 - **Résolution multi-device du Context Engine** : aujourd'hui un focus par utilisateur. Une clé par device/thread sera nécessaire dès qu'un deuxième client concurrent existe (V0.6+).
 
-Voir `docs/decisions/` pour les ADR détaillant chaque choix, et `docs/architecture/memory-system.md` pour le détail du Memory Engine.
+Voir `docs/decisions/` pour les ADR détaillant chaque choix, `docs/architecture/memory-system.md` pour le détail du Memory Engine, et `docs/architecture/tool-system.md` pour le détail de Permission Gate / Tool Executor (implémentés en V1.1).

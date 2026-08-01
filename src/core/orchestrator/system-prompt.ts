@@ -12,6 +12,9 @@ const MEMORY_TOOL_INSTRUCTIONS = `Tu as accès à l'outil "flag_memory_candidate
 N'utilise jamais cet outil pour du contenu anecdotique ou une question ponctuelle sans valeur durable.
 Après avoir appelé cet outil, tu recevras une confirmation que la proposition est enregistrée : à ce stade, l'information n'est PAS encore mémorisée définitivement — demande explicitement à l'utilisateur de confirmer avant de considérer que c'est acquis.`;
 
+const GENERAL_TOOL_INSTRUCTIONS = `Tu as accès à d'autres outils (listés dans les outils disponibles, en dehors de "flag_memory_candidate") pour agir concrètement pour l'utilisateur.
+Certains nécessitent une autorisation explicite avant de s'exécuter. Si un outil te répond qu'une autorisation est nécessaire, demande clairement à l'utilisateur s'il autorise l'action une seule fois, pour cette session, ou pour toujours — ou s'il refuse. Ne dis jamais qu'une action a été réalisée tant qu'elle n'a pas été exécutée avec succès (le résultat de l'outil te le confirmera explicitement).`;
+
 function formatMemory(item: MemoryItem): string {
   return `- [${item.type}] ${item.content}`;
 }
@@ -19,9 +22,9 @@ function formatMemory(item: MemoryItem): string {
 export function buildSystemPrompt(params: {
   relevantMemories: MemoryItem[];
   contextState: ContextState;
-  confirmationOutcomeNote: string | null;
+  outcomeNotes: (string | null)[];
 }): string {
-  const parts = [IDENTITY, MEMORY_TOOL_INSTRUCTIONS];
+  const parts = [IDENTITY, MEMORY_TOOL_INSTRUCTIONS, GENERAL_TOOL_INSTRUCTIONS];
 
   if (params.relevantMemories.length > 0) {
     parts.push(
@@ -36,8 +39,8 @@ export function buildSystemPrompt(params: {
     parts.push(`Tâche active courante : ${params.contextState.activeTask}`);
   }
 
-  if (params.confirmationOutcomeNote) {
-    parts.push(params.confirmationOutcomeNote);
+  for (const note of params.outcomeNotes) {
+    if (note) parts.push(note);
   }
 
   return parts.join("\n\n");
