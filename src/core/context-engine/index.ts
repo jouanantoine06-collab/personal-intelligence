@@ -12,6 +12,10 @@ export interface ContextState {
   pendingConfirmations: PendingConfirmation[];
   lastDevice: string | null;
   lastModality: string | null;
+  // Identifiant IANA (ex. "Europe/Paris"), jamais un offset fixe — voir
+  // src/lib/timezone.ts. Null tant que l'utilisateur ne l'a pas configuré
+  // explicitement (aucune déduction automatique silencieuse).
+  timezone: string | null;
 }
 
 function defaultState(userId: string): ContextState {
@@ -23,6 +27,7 @@ function defaultState(userId: string): ContextState {
     pendingConfirmations: [],
     lastDevice: null,
     lastModality: null,
+    timezone: null,
   };
 }
 
@@ -52,6 +57,7 @@ export async function getContextState(
     pendingConfirmations: data.pending_confirmations,
     lastDevice: data.last_device,
     lastModality: data.last_modality,
+    timezone: data.timezone,
   };
 }
 
@@ -67,6 +73,7 @@ export async function upsertContextState(
     pending_confirmations: state.pendingConfirmations,
     last_device: state.lastDevice,
     last_modality: state.lastModality,
+    timezone: state.timezone,
     updated_at: new Date().toISOString(),
   });
 

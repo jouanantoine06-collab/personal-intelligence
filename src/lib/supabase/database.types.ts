@@ -123,6 +123,7 @@ export interface Database {
           pending_confirmations: PendingConfirmation[];
           last_device: string | null;
           last_modality: string | null;
+          timezone: string | null;
           updated_at: string;
         };
         Insert: {
@@ -134,6 +135,7 @@ export interface Database {
           pending_confirmations?: PendingConfirmation[];
           last_device?: string | null;
           last_modality?: string | null;
+          timezone?: string | null;
           updated_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["context_state"]["Insert"]>;

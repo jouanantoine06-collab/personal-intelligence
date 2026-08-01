@@ -2,6 +2,8 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { createServiceRoleClient } from "@/lib/supabase/service-role";
 import { getConnectionStatus } from "@/core/google-calendar/connections";
+import { getContextState } from "@/core/context-engine/index";
+import { TimezoneForm } from "@/app/integrations/timezone-form";
 
 export default async function IntegrationsPage({
   searchParams,
@@ -19,7 +21,10 @@ export default async function IntegrationsPage({
 
   const { status: callbackStatus } = await searchParams;
   const serviceRoleClient = createServiceRoleClient();
-  const connection = await getConnectionStatus(serviceRoleClient, user.id);
+  const [connection, contextState] = await Promise.all([
+    getConnectionStatus(serviceRoleClient, user.id),
+    getContextState(supabase, user.id),
+  ]);
 
   return (
     <main>
@@ -53,6 +58,14 @@ export default async function IntegrationsPage({
       ) : (
         <a href="/api/integrations/google-calendar/connect">Connecter Google Calendar</a>
       )}
+
+      <h2>Fuseau horaire</h2>
+      <p>
+        {contextState.timezone
+          ? `Fuseau actuel : ${contextState.timezone}.`
+          : "Aucun fuseau horaire configuré — tant qu'il ne l'est pas, l'assistant ne devinera jamais une date ou une heure relative et te demandera de le configurer ici."}
+      </p>
+      <TimezoneForm currentTimezone={contextState.timezone} />
     </main>
   );
 }

@@ -131,7 +131,7 @@ export async function revokeAndDeleteConnection(
   await deleteConnection(supabase, userId);
 }
 
-async function markConnectionError(
+export async function markConnectionError(
   supabase: SupabaseClient<Database>,
   userId: string,
   message: string,

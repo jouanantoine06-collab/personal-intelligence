@@ -27,12 +27,14 @@ import {
 import { buildSystemPrompt } from "@/core/orchestrator/system-prompt";
 import { getTool, listToolsForAI } from "@/core/tool-registry/index";
 import { registerBuiltinTools } from "@/core/tool-registry/builtin-tools";
+import { registerGoogleCalendarTools } from "@/core/tool-registry/google-calendar-tools";
 import { checkPermission, grantPermission } from "@/core/permission-gate/index";
 import { executeTool } from "@/core/tool-executor/index";
 
 // Idempotent (registerTool écrase plutôt que de lever une erreur) : sûr à
 // ré-exécuter si ce module est rechargé à chaud en développement.
 registerBuiltinTools();
+registerGoogleCalendarTools();
 
 const MAX_TOOL_ITERATIONS = 4;
 const RECENT_MESSAGES_LIMIT = 20;
