@@ -39,6 +39,14 @@ describe("resolvePendingConfirmation", () => {
     expect(outcome).toBe("unrelated");
   });
 
+  it("retourne 'confirm' même si le modèle encapsule sa réponse en ```json — bug réel observé", async () => {
+    const outcome = await resolvePendingConfirmation(fakeProvider('```json\n{"outcome":"confirm"}\n```'), {
+      pendingContent: "Verdict est ta priorité",
+      userMessage: "Oui, confirme.",
+    });
+    expect(outcome).toBe("confirm");
+  });
+
   it("retourne 'unrelated' si le modèle ne répond rien", async () => {
     const outcome = await resolvePendingConfirmation(fakeProvider(null), {
       pendingContent: "Verdict est ta priorité",

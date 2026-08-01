@@ -26,7 +26,10 @@ export type MemoryStatusValue = z.infer<typeof memoryStatusSchema>;
 const profilSchema = z.object({ key: z.string().min(1), value: z.string().min(1) });
 const projetSchema = z.object({
   project_name: z.string().min(1),
-  statut: z.enum(["actif", "en_pause", "termine"]).default("actif"),
+  // .catch (pas seulement .default) : un modèle peut renvoyer une formulation hors
+  // énumération (ex. "priorité actuelle" au lieu de "actif") — on retombe sur une
+  // valeur valide plutôt que de rejeter tout le candidat pour un champ secondaire.
+  statut: z.enum(["actif", "en_pause", "termine"]).catch("actif"),
   details: z.string().optional(),
 });
 const relationnelSchema = z.object({

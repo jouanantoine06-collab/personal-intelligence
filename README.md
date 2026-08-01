@@ -42,7 +42,9 @@ SUPABASE_TEST_ANON_KEY=...
 SUPABASE_TEST_SERVICE_ROLE_KEY=...
 ```
 
-Sans ces variables, la suite est automatiquement ignorée (`describe.skipIf`) — c'est le cas dans cet environnement de développement.
+`src/core/memory-engine/concurrency.integration.test.ts` utilise les mêmes variables et prouve, contre un vrai Postgres, qu'aucune transition d'état (confirm/reject/delete) ne peut réussir en double sous concurrence (voir ADR-0010).
+
+Sans ces variables, ces suites sont automatiquement ignorées (`describe.skipIf`) — c'est le cas dans cet environnement de développement.
 
 ```
 npm run typecheck
@@ -50,6 +52,24 @@ npm run lint
 npm test
 npm run build
 ```
+
+## Tranche de validation en conditions réelles
+
+Provisionnement effectué sur un vrai projet Supabase (migrations 0001+0002 appliquées, schéma vérifié), parcours auth/chat/mémoire testés pour de vrai (navigateur headless réel via Playwright + vraie API Claude), tests RLS et de concurrence exécutés contre le vrai projet. Bugs réels trouvés et corrigés à cette occasion :
+
+- middleware jamais exécuté (mauvais emplacement du fichier avec une structure `src/`) — toutes les pages étaient accessibles sans authentification ;
+- redirection HTML des routes `/api/*` par le middleware au lieu d'un 401 JSON ;
+- réponses JSON de Claude/Haiku parfois encapsulées en ```` ```json ```` malgré la consigne contraire, cassant l'extraction de candidat mémoire et la classification de confirmation (`src/core/ai-provider/parse-json-response.ts`) ;
+- race condition réelle sur les transitions d'état mémoire, corrigée par écriture conditionnelle atomique (ADR-0010).
+
+### Scripts de validation (`scripts/`)
+
+Non couverts par `npm test` (nécessitent un vrai projet Supabase/Anthropic configuré dans `.env.local`) :
+- `check-schema.mjs` — vérifie que le schéma réel correspond aux migrations.
+- `check-audit-journal.mjs <email>` — affiche les événements journalisés pour un utilisateur.
+- `run-rls-integration-tests.mjs` / `run-concurrency-integration-tests.mjs` — exécutent les suites d'intégration en réutilisant les identifiants du projet de dev comme `SUPABASE_TEST_*` (aucun second projet dédié provisionné).
+- `e2e-validation.mjs` — parcours navigateur réel (Playwright) : auth, chat avec Claude, mémorisation, confirmation, refus, correction, suppression.
+- `cleanup-test-users.mjs` — supprime les utilisateurs de test créés par ces scripts.
 
 ## Documentation
 

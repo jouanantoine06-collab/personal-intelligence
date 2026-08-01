@@ -7,6 +7,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import type { AIProvider } from "@/core/ai-provider/types";
 import { userText } from "@/core/ai-provider/types";
+import { parseJsonResponse } from "@/core/ai-provider/parse-json-response";
 import {
   memoryCandidateSchema,
   parseStructuredContent,
@@ -16,9 +17,10 @@ import { rowToMemoryItem, type MemoryItem } from "@/core/memory-engine/types";
 import type { MemoryRetriever, MemoryRetrievalQuery } from "@/core/memory-engine/retriever";
 import { StructuredMemoryRetriever } from "@/core/memory-engine/structured-retriever";
 import {
-  assertValidTransition,
   InvalidMemoryInputError,
   MemoryNotFoundError,
+  MemoryStateConflictError,
+  type MemoryAction,
 } from "@/core/memory-engine/errors";
 import type { MemoryStatus, MemoryType } from "@/lib/supabase/database.types";
 
@@ -32,11 +34,11 @@ const defaultRetriever: MemoryRetriever = new StructuredMemoryRetriever();
 // le modèle de raisonnement) en candidat structuré, via un appel modèle "fast".
 
 const EXTRACTION_SYSTEM_PROMPT = `Tu extrais une information à mémoriser depuis une déclaration utilisateur.
-Réponds UNIQUEMENT avec un objet JSON valide, sans balise markdown, avec exactement ces champs :
+Réponds UNIQUEMENT avec un objet JSON valide, sans balise markdown et sans balise de code (pas de \`\`\`), avec exactement ces champs :
 {
   "type": "profil" | "projet" | "relationnel" | "episodique" | "temporaire" | "regles",
   "content": string (résumé court et lisible),
-  "structured_content": object (forme dépend du type : profil={key,value}, projet={project_name,statut,details?}, relationnel={person_name,relation?,details?}, episodique={event,when?}, temporaire={note}, regles={rule}),
+  "structured_content": object (forme dépend du type : profil={key,value}, projet={project_name,statut:"actif"|"en_pause"|"termine",details?}, relationnel={person_name,relation?,details?}, episodique={event,when?}, temporaire={note}, regles={rule}). Le champ "statut" d'un projet doit être EXACTEMENT l'une de ces trois valeurs, jamais une autre formulation.,
   "confidence": number entre 0 et 1,
   "importance": number entre 0 et 1,
   "sensitivity": "public" | "normal" | "sensible",
@@ -59,12 +61,17 @@ export async function extractCandidate(
   }
 
   try {
-    const parsedJson: unknown = JSON.parse(result.textSummary);
+    const parsedJson: unknown = parseJsonResponse(result.textSummary);
     const candidate = memoryCandidateSchema.parse({
       ...(parsedJson as Record<string, unknown>),
       is_explicit_request: isExplicitRequest,
     });
-    parseStructuredContent(candidate.type, candidate.structured_content);
+    // parseStructuredContent peut substituer des valeurs (ex. .catch()) : il faut
+    // réutiliser son résultat, pas seulement l'appeler pour valider et le jeter.
+    candidate.structured_content = parseStructuredContent(
+      candidate.type,
+      candidate.structured_content,
+    );
     return candidate;
   } catch {
     return null;
@@ -184,39 +191,71 @@ export async function fetchOwnedMemoryItem(
   return data;
 }
 
+// Écriture conditionnelle atomique : la clause WHERE (id + user_id + statut
+// attendu) décide seule si la transition a lieu — jamais une lecture préalable du
+// statut suivie d'une écriture séparée (c'est exactement cette fenêtre qui a permis
+// une race condition démontrée : deux confirmations concurrentes pouvaient toutes
+// les deux réussir). Si aucune ligne n'est modifiée, une lecture de diagnostic
+// qualifie l'erreur (introuvable vs conflit d'état) mais n'influence jamais la
+// décision déjà prise par l'UPDATE lui-même.
+async function performGatedUpdate(
+  supabase: SupabaseClient<Database>,
+  params: {
+    userId: string;
+    memoryItemId: string;
+    expectedStatus: MemoryStatus;
+    updatePayload: Database["public"]["Tables"]["memory_items"]["Update"];
+    action: MemoryAction;
+  },
+): Promise<Database["public"]["Tables"]["memory_items"]["Row"]> {
+  const { userId, memoryItemId, expectedStatus, updatePayload, action } = params;
+
+  const { data, error } = await supabase
+    .from("memory_items")
+    .update(updatePayload)
+    .eq("id", memoryItemId)
+    .eq("user_id", userId)
+    .eq("status", expectedStatus)
+    .select("*")
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Transition "${action}" impossible: ${error.message}`);
+  }
+  if (data) {
+    return data;
+  }
+
+  const current = await fetchOwnedMemoryItem(supabase, userId, memoryItemId);
+  throw new MemoryStateConflictError(action, current.status);
+}
+
 export async function confirmMemory(
   supabase: SupabaseClient<Database>,
   userId: string,
   memoryItemId: string,
 ): Promise<MemoryItem> {
-  const proposedRow = await fetchOwnedMemoryItem(supabase, userId, memoryItemId);
-  assertValidTransition(proposedRow.status, "confirm");
+  const confirmedRow = await performGatedUpdate(supabase, {
+    userId,
+    memoryItemId,
+    expectedStatus: "proposed",
+    updatePayload: { status: "active", last_confirmed_at: new Date().toISOString() },
+    action: "confirm",
+  });
 
-  if (proposedRow.supersedes_id) {
-    const { error: supersedeError } = await supabase
+  if (confirmedRow.supersedes_id) {
+    // Best-effort : la confirmation elle-même a déjà réussi atomiquement ci-dessus ;
+    // si l'ancien souvenir n'est plus "active" (déjà changé par ailleurs), on ne fait
+    // pas échouer la confirmation pour autant — seule sa propre transition compte.
+    await supabase
       .from("memory_items")
       .update({ status: "superseded" })
-      .eq("id", proposedRow.supersedes_id)
-      .eq("user_id", userId);
-
-    if (supersedeError) {
-      throw new Error(`Supersession impossible: ${supersedeError.message}`);
-    }
+      .eq("id", confirmedRow.supersedes_id)
+      .eq("user_id", userId)
+      .eq("status", "active");
   }
 
-  const { data, error } = await supabase
-    .from("memory_items")
-    .update({ status: "active", last_confirmed_at: new Date().toISOString() })
-    .eq("id", memoryItemId)
-    .eq("user_id", userId)
-    .select("*")
-    .single();
-
-  if (error || !data) {
-    throw new Error(`Confirmation du souvenir impossible: ${error?.message}`);
-  }
-
-  return rowToMemoryItem(data);
+  return rowToMemoryItem(confirmedRow);
 }
 
 export async function rejectMemory(
@@ -224,18 +263,13 @@ export async function rejectMemory(
   userId: string,
   memoryItemId: string,
 ): Promise<void> {
-  const row = await fetchOwnedMemoryItem(supabase, userId, memoryItemId);
-  assertValidTransition(row.status, "reject");
-
-  const { error } = await supabase
-    .from("memory_items")
-    .update({ status: "deleted", deleted_at: new Date().toISOString() })
-    .eq("id", memoryItemId)
-    .eq("user_id", userId);
-
-  if (error) {
-    throw new Error(`Rejet du souvenir impossible: ${error.message}`);
-  }
+  await performGatedUpdate(supabase, {
+    userId,
+    memoryItemId,
+    expectedStatus: "proposed",
+    updatePayload: { status: "deleted", deleted_at: new Date().toISOString() },
+    action: "reject",
+  });
 }
 
 // Correction d'une proposition avant validation (section 2) : la ligne n'est pas
@@ -247,33 +281,31 @@ export async function editProposedMemory(
   memoryItemId: string,
   updates: { content: string; structuredContent: Record<string, unknown> },
 ): Promise<MemoryItem> {
-  const row = await fetchOwnedMemoryItem(supabase, userId, memoryItemId);
-  assertValidTransition(row.status, "edit_proposed");
+  // Lecture informationnelle uniquement (récupérer `type`, immuable, pour valider
+  // structured_content) — ne sert jamais à décider si la transition est permise :
+  // seule la clause WHERE status='proposed' de l'écriture ci-dessous en décide.
+  const current = await fetchOwnedMemoryItem(supabase, userId, memoryItemId);
 
   let validatedStructuredContent: Record<string, unknown>;
   try {
-    validatedStructuredContent = parseStructuredContent(row.type, updates.structuredContent);
+    validatedStructuredContent = parseStructuredContent(current.type, updates.structuredContent);
   } catch (validationError) {
     throw new InvalidMemoryInputError(
-      `Contenu structuré invalide pour le type "${row.type}": ${
+      `Contenu structuré invalide pour le type "${current.type}": ${
         validationError instanceof Error ? validationError.message : String(validationError)
       }`,
     );
   }
 
-  const { data, error } = await supabase
-    .from("memory_items")
-    .update({ content: updates.content, structured_content: validatedStructuredContent })
-    .eq("id", memoryItemId)
-    .eq("user_id", userId)
-    .select("*")
-    .single();
+  const updatedRow = await performGatedUpdate(supabase, {
+    userId,
+    memoryItemId,
+    expectedStatus: "proposed",
+    updatePayload: { content: updates.content, structured_content: validatedStructuredContent },
+    action: "edit_proposed",
+  });
 
-  if (error || !data) {
-    throw new Error(`Édition de la proposition impossible: ${error?.message}`);
-  }
-
-  return rowToMemoryItem(data);
+  return rowToMemoryItem(updatedRow);
 }
 
 // Correction d'un souvenir actif (section 4) : jamais d'écrasement silencieux —
@@ -281,6 +313,12 @@ export async function editProposedMemory(
 // Déclenchée directement par une action utilisateur explicite et délibérée dans
 // l'interface de gestion mémoire (source_type = "explicite"), donc sans étape de
 // confirmation supplémentaire : le clic de sauvegarde EST la confirmation.
+//
+// Ordre important pour la sécurité sous concurrence : la supersession de l'ancien
+// souvenir (gatée, atomique) a lieu AVANT l'insertion de la nouvelle version. Si
+// elle échoue (l'ancien souvenir a déjà changé de statut ailleurs), aucune nouvelle
+// ligne n'est créée — on évite ainsi une ligne "active" orpheline qui ne
+// remplacerait plus rien de cohérent.
 export async function correctActiveMemory(
   supabase: SupabaseClient<Database>,
   params: {
@@ -291,37 +329,47 @@ export async function correctActiveMemory(
   },
 ): Promise<{ memoryItem: MemoryItem; supersededId: string }> {
   const { userId, memoryItemId, content, structuredContent } = params;
-  const oldRow = await fetchOwnedMemoryItem(supabase, userId, memoryItemId);
-  assertValidTransition(oldRow.status, "correct_active");
+
+  // Lecture informationnelle uniquement (récupérer `type` pour valider le contenu
+  // structuré avant toute écriture) — ne décide jamais de la transition.
+  const current = await fetchOwnedMemoryItem(supabase, userId, memoryItemId);
 
   let validatedStructuredContent: Record<string, unknown>;
   try {
-    validatedStructuredContent = parseStructuredContent(oldRow.type, structuredContent);
+    validatedStructuredContent = parseStructuredContent(current.type, structuredContent);
   } catch (validationError) {
     throw new InvalidMemoryInputError(
-      `Contenu structuré invalide pour le type "${oldRow.type}": ${
+      `Contenu structuré invalide pour le type "${current.type}": ${
         validationError instanceof Error ? validationError.message : String(validationError)
       }`,
     );
   }
 
+  const supersededRow = await performGatedUpdate(supabase, {
+    userId,
+    memoryItemId,
+    expectedStatus: "active",
+    updatePayload: { status: "superseded" },
+    action: "correct_active",
+  });
+
   const { data: newRow, error: insertError } = await supabase
     .from("memory_items")
     .insert({
       user_id: userId,
-      type: oldRow.type,
+      type: supersededRow.type,
       content,
       structured_content: validatedStructuredContent,
       source_type: "explicite",
       source_turn_id: null,
-      event_date: oldRow.event_date,
-      confidence: oldRow.confidence,
-      importance: oldRow.importance,
-      sensitivity: oldRow.sensitivity,
+      event_date: supersededRow.event_date,
+      confidence: supersededRow.confidence,
+      importance: supersededRow.importance,
+      sensitivity: supersededRow.sensitivity,
       status: "active",
-      supersedes_id: oldRow.id,
-      project_id: oldRow.project_id,
-      related_person_ids: oldRow.related_person_ids,
+      supersedes_id: supersededRow.id,
+      project_id: supersededRow.project_id,
+      related_person_ids: supersededRow.related_person_ids,
       last_confirmed_at: new Date().toISOString(),
     })
     .select("*")
@@ -331,17 +379,7 @@ export async function correctActiveMemory(
     throw new Error(`Écriture de la correction impossible: ${insertError?.message}`);
   }
 
-  const { error: supersedeError } = await supabase
-    .from("memory_items")
-    .update({ status: "superseded" })
-    .eq("id", oldRow.id)
-    .eq("user_id", userId);
-
-  if (supersedeError) {
-    throw new Error(`Supersession de l'ancien souvenir impossible: ${supersedeError.message}`);
-  }
-
-  return { memoryItem: rowToMemoryItem(newRow), supersededId: oldRow.id };
+  return { memoryItem: rowToMemoryItem(newRow), supersededId: supersededRow.id };
 }
 
 // Suppression d'un souvenir actif (section 5) : soft-delete, jamais hors du cycle
@@ -351,18 +389,13 @@ export async function deleteActiveMemory(
   userId: string,
   memoryItemId: string,
 ): Promise<void> {
-  const row = await fetchOwnedMemoryItem(supabase, userId, memoryItemId);
-  assertValidTransition(row.status, "delete_active");
-
-  const { error } = await supabase
-    .from("memory_items")
-    .update({ status: "deleted", deleted_at: new Date().toISOString() })
-    .eq("id", memoryItemId)
-    .eq("user_id", userId);
-
-  if (error) {
-    throw new Error(`Suppression du souvenir impossible: ${error.message}`);
-  }
+  await performGatedUpdate(supabase, {
+    userId,
+    memoryItemId,
+    expectedStatus: "active",
+    updatePayload: { status: "deleted", deleted_at: new Date().toISOString() },
+    action: "delete_active",
+  });
 }
 
 // --- Lecture --------------------------------------------------------------

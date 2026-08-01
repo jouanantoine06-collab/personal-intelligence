@@ -26,22 +26,6 @@ export class InvalidMemoryInputError extends Error {
 
 export type MemoryAction = "confirm" | "reject" | "edit_proposed" | "correct_active" | "delete_active";
 
-const ALLOWED_STATUS_BY_ACTION: Record<MemoryAction, readonly MemoryStatus[]> = {
-  confirm: ["proposed"],
-  reject: ["proposed"],
-  edit_proposed: ["proposed"],
-  correct_active: ["active"],
-  delete_active: ["active"],
-};
-
-// Garde-fou unique et pur pour toutes les transitions d'état de la mémoire —
-// aucune route ni fonction du Memory Engine ne doit dupliquer cette règle.
-export function assertValidTransition(status: MemoryStatus, action: MemoryAction): void {
-  if (!ALLOWED_STATUS_BY_ACTION[action].includes(status)) {
-    throw new MemoryStateConflictError(action, status);
-  }
-}
-
 // Décision pure utilisée par la route PATCH /api/memory/[id] pour choisir entre
 // éditer une proposition en place et corriger (superséder) un souvenir actif.
 export function resolveCorrectionAction(

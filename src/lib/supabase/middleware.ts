@@ -31,8 +31,14 @@ export async function updateSession(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const isAuthRoute = request.nextUrl.pathname.startsWith("/login");
+  const isApiRoute = request.nextUrl.pathname.startsWith("/api/");
 
-  if (!user && !isAuthRoute) {
+  // Les routes API gèrent elles-mêmes le cas non authentifié (401 JSON via
+  // auth.getUser() dans chaque handler) — les rediriger vers /login renverrait
+  // du HTML à un appel fetch() côté client, provoquant un échec silencieux au
+  // lieu d'une erreur exploitable (ex. session expirée pendant une conversation
+  // en cours). Bug trouvé pendant la tranche de validation réelle.
+  if (!user && !isAuthRoute && !isApiRoute) {
     const redirectUrl = request.nextUrl.clone();
     redirectUrl.pathname = "/login";
     return NextResponse.redirect(redirectUrl);

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AIProvider } from "@/core/ai-provider/types";
 import { userText } from "@/core/ai-provider/types";
+import { parseJsonResponse } from "@/core/ai-provider/parse-json-response";
 
 const resolutionSchema = z.object({
   outcome: z.enum(["confirm", "reject", "unrelated"]),
@@ -31,7 +32,7 @@ export async function resolvePendingConfirmation(
   }
 
   try {
-    const parsed: unknown = JSON.parse(result.textSummary);
+    const parsed: unknown = parseJsonResponse(result.textSummary);
     return resolutionSchema.parse(parsed).outcome;
   } catch {
     return "unrelated";
