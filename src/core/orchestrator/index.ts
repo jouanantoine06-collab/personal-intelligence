@@ -119,6 +119,11 @@ export async function runTurn(
 
     // Résolution d'une proposition de mémorisation en attente (inchangé, V1.1).
     let outcomeNote: string | null = null;
+    // Empêche flag_memory_candidate de reproposer, dans ce même tour, le fait
+    // qui vient tout juste d'être confirmé ou refusé (bug réel observé : le
+    // modèle relit l'historique récent — qui contient toujours le message
+    // d'origine — et re-déclenche l'extraction pour le même contenu).
+    let memoryJustResolvedThisTurn = false;
     const pendingMemory = contextState.pendingConfirmations.find((p) => p.kind === "memory_proposal");
     if (pendingMemory) {
       const outcome = await resolvePendingConfirmation(aiProvider, {
@@ -127,6 +132,7 @@ export async function runTurn(
       });
 
       if (outcome === "confirm" || outcome === "reject") {
+        memoryJustResolvedThisTurn = true;
         try {
           if (outcome === "confirm") {
             await confirmMemory(supabase, userId, pendingMemory.memoryItemId);
@@ -193,17 +199,21 @@ export async function runTurn(
       payload: { count: relevantMemories.length, ids: relevantMemories.map((m) => m.id) },
     });
 
-    const { data: recentRows, error: recentError } = await supabase
+    // Les N DERNIERS messages, dans l'ordre chronologique : on trie en
+    // décroissant pour que `limit` retienne la fin de la conversation plutôt
+    // que son tout début, puis on remet en ordre croissant pour l'appel IA.
+    const { data: recentRowsDesc, error: recentError } = await supabase
       .from("messages")
       .select("role, content")
       .eq("conversation_id", conversationId)
-      .order("created_at", { ascending: true })
+      .order("created_at", { ascending: false })
       .limit(RECENT_MESSAGES_LIMIT);
     if (recentError) {
       throw new Error(`Lecture de l'historique impossible: ${recentError.message}`);
     }
 
-    const messages: AIMessage[] = (recentRows ?? []).map((row) =>
+    const recentRows = (recentRowsDesc ?? []).slice().reverse();
+    const messages: AIMessage[] = recentRows.map((row) =>
       row.role === "user" ? userText(row.content) : assistantText(row.content),
     );
 
@@ -223,7 +233,10 @@ export async function runTurn(
     // même outil soit re-proposé à la confirmation deux fois dans le même tour.
     const toolsAlreadyAwaitingConfirmationThisTurn = new Set<string>();
 
-    const tools: AIToolDefinition[] = [FLAG_MEMORY_CANDIDATE_TOOL, ...listToolsForAI()];
+    const tools: AIToolDefinition[] = [
+      ...(memoryJustResolvedThisTurn ? [] : [FLAG_MEMORY_CANDIDATE_TOOL]),
+      ...listToolsForAI(),
+    ];
     if (eligibleToolConfirmations.length > 0) {
       tools.push(buildResolvePendingConfirmationTool(eligibleToolConfirmations.map((p) => p.id)));
     }
