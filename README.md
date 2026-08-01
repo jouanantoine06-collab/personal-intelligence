@@ -82,7 +82,13 @@ Deux bugs réels trouvés et corrigés via tests en conditions réelles (navigat
 
 Corrigés par un dédoublonnage intra-tour déterministe et une expiration stricte inter-tour (ADR-0012) — limite résiduelle documentée et assumée : le classifieur de résolution peut encore, rarement, mal classer un nouveau sujet ; une amélioration (résolution portée par le modèle principal) est prévue pour une prochaine tranche, sans bloquer celle-ci.
 
-`src/core/orchestrator/tool-flow.integration.test.ts` couvre, contre un vrai Supabase : la chaîne complète, le dédoublonnage, et les 6 scénarios d'expiration (réponse immédiate, négative, aparté, nouveau sujet, confirmation expirée, absence de réponse).
+## V1.2 — résolution des confirmations pilotée par le modèle principal
+
+Le classifieur isolé (`resolveToolPermissionResponse`, un appel Haiku séparé ne voyant que le contenu en attente + le dernier message) est **supprimé**. Remplacé par un outil structuré (`resolve_pending_confirmation`) proposé au modèle de raisonnement principal — avec tout l'historique de conversation — uniquement quand une confirmation est éligible pour la conversation courante. Décision en 4 valeurs (`confirm`+scope obligatoire, `reject`, `unrelated`, `clarify`), schéma strict (le modèle ne peut jamais fournir de contenu de remplacement), expiration désormais exhaustive (sortie invalide/ambiguë/absente/erreur de modèle → toujours expirée, jamais exécutée). Voir ADR-0013.
+
+`src/core/orchestrator/tool-flow.integration.test.ts` couvre, contre un vrai Supabase, 20 tests dont les 15 cas demandés (réponse immédiate, "une fois", "toujours", refus, annulation, ambiguïté, nouveau sujet, aparté puis réponse tardive, tentative de modification du payload, injection de prompt, confirmation expirée, absence de confirmation en attente, deux confirmations simultanées, réponse courte simulée, erreur/timeout du modèle).
+
+Un smoke test réel (navigateur + vrai Claude), reproduisant exactement le scénario qui échouait sous l'ancien mécanisme (nouveau sujet après confirmation en attente), montre sur deux exécutions consécutives le modèle appeler correctement `resolve_pending_confirmation` avec `decision:"unrelated"` — aucune fausse confirmation observée.
 
 ## Documentation
 

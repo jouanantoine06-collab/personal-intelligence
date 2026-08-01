@@ -209,9 +209,18 @@ export interface MemoryProposalPendingConfirmation {
 
 export interface ToolExecutionPendingConfirmation {
   kind: "tool_execution";
+  // Identifiant stable, référencé explicitement par la décision structurée du
+  // modèle — jamais résolu par position (index 0) : le modèle doit désigner
+  // précisément QUELLE confirmation il résout (V1.2, cf. ADR sur la résolution
+  // pilotée par le modèle principal).
+  id: string;
   toolName: string;
   rawInput: Record<string, unknown>;
   riskLevel: ToolRiskLevel;
+  // La confirmation n'est éligible à résolution que dans LA MÊME conversation
+  // que celle où elle a été créée — jamais résolue par un message provenant
+  // d'une autre conversation de l'utilisateur.
+  conversationId: string;
   createdAt: string;
 }
 
