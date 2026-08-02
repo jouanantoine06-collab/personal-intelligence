@@ -36,7 +36,12 @@ import { executeTool } from "@/core/tool-executor/index";
 registerBuiltinTools();
 registerGoogleCalendarTools();
 
-const MAX_TOOL_ITERATIONS = 4;
+// 4 suffisait en V1.1 avec un ou deux outils simples ; avec les 5 outils
+// calendrier (V1.3b/c/d), un échange légitime (ex: chercher un événement,
+// puis demander sa suppression) peut déjà consommer plusieurs itérations —
+// 4 devenait atteignable sans aucun dérapage du modèle, pas seulement en cas
+// de boucle. Voir ADR-0015.
+const MAX_TOOL_ITERATIONS = 8;
 const RECENT_MESSAGES_LIMIT = 20;
 const RETRIEVAL_LIMIT = 10;
 

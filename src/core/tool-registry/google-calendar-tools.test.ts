@@ -7,7 +7,13 @@ import {
   GoogleCalendarReconnectRequiredError,
   markConnectionError,
 } from "@/core/google-calendar/connections";
-import { createCalendarEvent, getCalendarEvent, listCalendarEvents } from "@/core/google-calendar/api";
+import {
+  createCalendarEvent,
+  deleteCalendarEvent,
+  getCalendarEvent,
+  listCalendarEvents,
+  updateCalendarEvent,
+} from "@/core/google-calendar/api";
 
 vi.mock("@/lib/supabase/service-role", () => ({
   createServiceRoleClient: vi.fn(() => ({})),
@@ -28,6 +34,8 @@ vi.mock("@/core/google-calendar/api", async () => {
     listCalendarEvents: vi.fn(),
     getCalendarEvent: vi.fn(),
     createCalendarEvent: vi.fn(),
+    updateCalendarEvent: vi.fn(),
+    deleteCalendarEvent: vi.fn(),
   };
 });
 
@@ -506,6 +514,236 @@ describe("Outils calendrier — exécution, isolation utilisateur, renouvellemen
 
     await expect(
       tool.execute(input, { supabase: {} as never, userId: "user-a" }),
+    ).rejects.toBeInstanceOf(GoogleCalendarApiError);
+    expect(markConnectionError).not.toHaveBeenCalled();
+  });
+});
+
+const VALID_UPDATE_INPUT = {
+  eventId: "evt-1",
+  title: "Dentiste (décalé)",
+  allDay: false,
+  startDateTime: "2026-08-02T16:00:00+02:00",
+  endDateTime: "2026-08-02T17:00:00+02:00",
+  timezone: "Europe/Paris",
+};
+
+describe("update_calendar_event — schéma d'entrée", () => {
+  const tool = getTool("update_calendar_event")!;
+
+  it("est classé external (confirmation toujours obligatoire)", () => {
+    expect(tool.riskLevel).toBe("external");
+  });
+
+  it("accepte une modification horaire complète et valide", () => {
+    expect(() => tool.parseInput(VALID_UPDATE_INPUT)).not.toThrow();
+  });
+
+  it("accepte une modification vers un événement journée entière", () => {
+    expect(() =>
+      tool.parseInput({
+        eventId: "evt-1",
+        title: "Anniversaire",
+        allDay: true,
+        startDateTime: "2026-08-09",
+        endDateTime: "2026-08-09",
+        timezone: "Europe/Paris",
+      }),
+    ).not.toThrow();
+  });
+
+  it("refuse un eventId manquant", () => {
+    const withoutEventId: Record<string, unknown> = { ...VALID_UPDATE_INPUT };
+    delete withoutEventId.eventId;
+    expect(() => tool.parseInput(withoutEventId)).toThrow();
+  });
+
+  it("refuse une date sans offset explicite", () => {
+    expect(() =>
+      tool.parseInput({ ...VALID_UPDATE_INPUT, startDateTime: "2026-08-02T16:00:00" }),
+    ).toThrow();
+  });
+
+  it("refuse un fuseau horaire invalide", () => {
+    expect(() => tool.parseInput({ ...VALID_UPDATE_INPUT, timezone: "+02:00" })).toThrow();
+  });
+
+  it("refuse une fin antérieure ou égale au début", () => {
+    expect(() =>
+      tool.parseInput({
+        ...VALID_UPDATE_INPUT,
+        startDateTime: "2026-08-02T17:00:00+02:00",
+        endDateTime: "2026-08-02T16:00:00+02:00",
+      }),
+    ).toThrow();
+  });
+
+  it("refuse un champ additionnel non prévu", () => {
+    expect(() => tool.parseInput({ ...VALID_UPDATE_INPUT, extra: "non prévu" })).toThrow();
+  });
+});
+
+describe("update_calendar_event — exécution", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("appelle updateCalendarEvent avec l'eventId, le token de l'utilisateur et le contenu figé", async () => {
+    const tool = getTool("update_calendar_event")!;
+    vi.mocked(ensureFreshAccessToken).mockResolvedValue("token-a");
+    vi.mocked(updateCalendarEvent).mockResolvedValue({
+      id: "evt-1",
+      summary: "Dentiste (décalé)",
+      start: "2026-08-02T16:00:00+02:00",
+      end: "2026-08-02T17:00:00+02:00",
+      isAllDay: false,
+      location: null,
+      description: null,
+      attendees: [],
+      htmlLink: null,
+    });
+
+    const input = tool.parseInput(VALID_UPDATE_INPUT);
+    const result = await tool.execute(input, { supabase: {} as never, userId: "user-a" });
+
+    expect(ensureFreshAccessToken).toHaveBeenCalledWith(expect.anything(), "user-a");
+    expect(updateCalendarEvent).toHaveBeenCalledWith("token-a", "evt-1", input);
+    expect((result as { event: { id: string } }).event.id).toBe("evt-1");
+  });
+
+  it("deux utilisateurs différents utilisent chacun leur propre token", async () => {
+    const tool = getTool("update_calendar_event")!;
+    vi.mocked(ensureFreshAccessToken).mockImplementation(async (_client, userId) =>
+      userId === "user-a" ? "token-a" : "token-b",
+    );
+    vi.mocked(updateCalendarEvent).mockResolvedValue({
+      id: "evt-1",
+      summary: "Test",
+      start: "2026-08-02T16:00:00+02:00",
+      end: "2026-08-02T17:00:00+02:00",
+      isAllDay: false,
+      location: null,
+      description: null,
+      attendees: [],
+      htmlLink: null,
+    });
+
+    const input = tool.parseInput(VALID_UPDATE_INPUT);
+    await tool.execute(input, { supabase: {} as never, userId: "user-a" });
+    await tool.execute(input, { supabase: {} as never, userId: "user-b" });
+
+    expect(vi.mocked(updateCalendarEvent).mock.calls[0]?.[0]).toBe("token-a");
+    expect(vi.mocked(updateCalendarEvent).mock.calls[1]?.[0]).toBe("token-b");
+  });
+
+  it("marque la connexion en erreur et invite à reconnecter sur un 401", async () => {
+    const tool = getTool("update_calendar_event")!;
+    vi.mocked(ensureFreshAccessToken).mockResolvedValue("stale-token");
+    vi.mocked(updateCalendarEvent).mockRejectedValue(new GoogleCalendarApiError(401, "Invalid Credentials"));
+
+    const input = tool.parseInput(VALID_UPDATE_INPUT);
+    await expect(
+      tool.execute(input, { supabase: {} as never, userId: "user-a" }),
+    ).rejects.toThrow(/reconnecte/i);
+    expect(markConnectionError).toHaveBeenCalledWith(expect.anything(), "user-a", expect.any(String));
+  });
+
+  it("une erreur Google autre que 401 (ex: 404 événement introuvable) n'affirme jamais un succès", async () => {
+    const tool = getTool("update_calendar_event")!;
+    vi.mocked(ensureFreshAccessToken).mockResolvedValue("token-a");
+    vi.mocked(updateCalendarEvent).mockRejectedValue(new GoogleCalendarApiError(404, "Not Found"));
+
+    const input = tool.parseInput(VALID_UPDATE_INPUT);
+    await expect(
+      tool.execute(input, { supabase: {} as never, userId: "user-a" }),
+    ).rejects.toBeInstanceOf(GoogleCalendarApiError);
+    expect(markConnectionError).not.toHaveBeenCalled();
+  });
+});
+
+describe("delete_calendar_event — schéma d'entrée", () => {
+  const tool = getTool("delete_calendar_event")!;
+
+  it("est classé external (confirmation toujours obligatoire)", () => {
+    expect(tool.riskLevel).toBe("external");
+  });
+
+  it("accepte un eventId non vide", () => {
+    expect(() => tool.parseInput({ eventId: "evt-1" })).not.toThrow();
+  });
+
+  it("refuse un eventId vide ou absent", () => {
+    expect(() => tool.parseInput({ eventId: "" })).toThrow();
+    expect(() => tool.parseInput({})).toThrow();
+  });
+
+  it("refuse un champ additionnel non prévu", () => {
+    expect(() => tool.parseInput({ eventId: "evt-1", title: "non prévu" })).toThrow();
+  });
+});
+
+describe("delete_calendar_event — exécution", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("appelle deleteCalendarEvent avec l'eventId exact et le token de l'utilisateur", async () => {
+    const tool = getTool("delete_calendar_event")!;
+    vi.mocked(ensureFreshAccessToken).mockResolvedValue("token-a");
+    vi.mocked(deleteCalendarEvent).mockResolvedValue(undefined);
+
+    const input = tool.parseInput({ eventId: "evt-1" });
+    const result = await tool.execute(input, { supabase: {} as never, userId: "user-a" });
+
+    expect(ensureFreshAccessToken).toHaveBeenCalledWith(expect.anything(), "user-a");
+    expect(deleteCalendarEvent).toHaveBeenCalledWith("token-a", "evt-1");
+    expect(result).toEqual({ deleted: true, eventId: "evt-1" });
+  });
+
+  it("deux utilisateurs différents utilisent chacun leur propre token", async () => {
+    const tool = getTool("delete_calendar_event")!;
+    vi.mocked(ensureFreshAccessToken).mockImplementation(async (_client, userId) =>
+      userId === "user-a" ? "token-a" : "token-b",
+    );
+    vi.mocked(deleteCalendarEvent).mockResolvedValue(undefined);
+
+    await tool.execute({ eventId: "evt-1" }, { supabase: {} as never, userId: "user-a" });
+    await tool.execute({ eventId: "evt-1" }, { supabase: {} as never, userId: "user-b" });
+
+    expect(vi.mocked(deleteCalendarEvent).mock.calls[0]?.[0]).toBe("token-a");
+    expect(vi.mocked(deleteCalendarEvent).mock.calls[1]?.[0]).toBe("token-b");
+  });
+
+  it("propage l'erreur de reconnexion sans jamais appeler deleteCalendarEvent si aucune connexion n'existe", async () => {
+    const tool = getTool("delete_calendar_event")!;
+    vi.mocked(ensureFreshAccessToken).mockRejectedValue(
+      new GoogleCalendarReconnectRequiredError("aucune connexion enregistrée"),
+    );
+
+    await expect(
+      tool.execute({ eventId: "evt-1" }, { supabase: {} as never, userId: "user-a" }),
+    ).rejects.toThrow(GoogleCalendarReconnectRequiredError);
+    expect(deleteCalendarEvent).not.toHaveBeenCalled();
+  });
+
+  it("marque la connexion en erreur et invite à reconnecter sur un 401", async () => {
+    const tool = getTool("delete_calendar_event")!;
+    vi.mocked(ensureFreshAccessToken).mockResolvedValue("stale-token");
+    vi.mocked(deleteCalendarEvent).mockRejectedValue(new GoogleCalendarApiError(401, "Invalid Credentials"));
+
+    await expect(
+      tool.execute({ eventId: "evt-1" }, { supabase: {} as never, userId: "user-a" }),
+    ).rejects.toThrow(/reconnecte/i);
+    expect(markConnectionError).toHaveBeenCalledWith(expect.anything(), "user-a", expect.any(String));
+  });
+
+  it("une erreur Google autre que 401 n'affirme jamais un succès et n'altère pas le statut", async () => {
+    const tool = getTool("delete_calendar_event")!;
+    vi.mocked(ensureFreshAccessToken).mockResolvedValue("token-a");
+    vi.mocked(deleteCalendarEvent).mockRejectedValue(new GoogleCalendarApiError(404, "Not Found"));
+
+    await expect(
+      tool.execute({ eventId: "evt-1" }, { supabase: {} as never, userId: "user-a" }),
     ).rejects.toBeInstanceOf(GoogleCalendarApiError);
     expect(markConnectionError).not.toHaveBeenCalled();
   });

@@ -141,7 +141,7 @@ export async function getCalendarEvent(
   };
 }
 
-export interface CreateCalendarEventInput {
+export interface CalendarEventInput {
   title: string;
   location?: string | null;
   description?: string | null;
@@ -155,11 +155,10 @@ export interface CreateCalendarEventInput {
   endDateTime: string;
 }
 
-export async function createCalendarEvent(
-  accessToken: string,
-  input: CreateCalendarEventInput,
-): Promise<CalendarEventDetail> {
-  const body = {
+export type CreateCalendarEventInput = CalendarEventInput;
+
+function buildEventRequestBody(input: CalendarEventInput) {
+  return {
     summary: input.title,
     location: input.location ?? undefined,
     description: input.description ?? undefined,
@@ -170,25 +169,74 @@ export async function createCalendarEvent(
       ? { date: shiftDateOnly(input.endDateTime, 1) }
       : { dateTime: input.endDateTime, timeZone: input.timezone },
   };
+}
 
-  const response = await fetch(`${CALENDAR_API_BASE}/calendars/primary/events`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) {
-    throw await parseCalendarErrorResponse(response);
-  }
-
-  const raw = (await response.json()) as RawGoogleEvent;
+function toDetail(raw: RawGoogleEvent): CalendarEventDetail {
   return {
     ...toSummary(raw),
     description: raw.description ?? null,
     attendees: (raw.attendees ?? []).map((a) => ({ email: a.email, responseStatus: a.responseStatus })),
     htmlLink: raw.htmlLink ?? null,
   };
+}
+
+export async function createCalendarEvent(
+  accessToken: string,
+  input: CalendarEventInput,
+): Promise<CalendarEventDetail> {
+  const response = await fetch(`${CALENDAR_API_BASE}/calendars/primary/events`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(buildEventRequestBody(input)),
+  });
+
+  if (!response.ok) {
+    throw await parseCalendarErrorResponse(response);
+  }
+
+  return toDetail((await response.json()) as RawGoogleEvent);
+}
+
+// Remplacement complet du contenu pertinent de l'événement (titre, horaires,
+// lieu, description) — jamais un patch partiel implicite : l'appelant doit
+// toujours fournir l'état final complet souhaité, jamais un delta que le
+// code devrait deviner ou fusionner avec l'existant.
+export async function updateCalendarEvent(
+  accessToken: string,
+  eventId: string,
+  input: CalendarEventInput,
+): Promise<CalendarEventDetail> {
+  const url = `${CALENDAR_API_BASE}/calendars/primary/events/${encodeURIComponent(eventId)}`;
+  const response = await fetch(url, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(buildEventRequestBody(input)),
+  });
+
+  if (!response.ok) {
+    throw await parseCalendarErrorResponse(response);
+  }
+
+  return toDetail((await response.json()) as RawGoogleEvent);
+}
+
+export async function deleteCalendarEvent(accessToken: string, eventId: string): Promise<void> {
+  const url = `${CALENDAR_API_BASE}/calendars/primary/events/${encodeURIComponent(eventId)}`;
+  const response = await fetch(url, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  // Google renvoie 204 (ou parfois 200) sans corps sur un succès ; 410 si
+  // l'événement était déjà supprimé — traité comme un succès idempotent,
+  // pas une erreur (le résultat souhaité par l'utilisateur est déjà atteint).
+  if (!response.ok && response.status !== 410) {
+    throw await parseCalendarErrorResponse(response);
+  }
 }

@@ -1,9 +1,11 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import {
   createCalendarEvent,
+  deleteCalendarEvent,
   getCalendarEvent,
   GoogleCalendarApiError,
   listCalendarEvents,
+  updateCalendarEvent,
 } from "@/core/google-calendar/api";
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -314,5 +316,151 @@ describe("Google Calendar API — createCalendarEvent", () => {
         endDateTime: "2026-08-02T15:00:00+02:00",
       }),
     ).rejects.toBeInstanceOf(GoogleCalendarApiError);
+  });
+});
+
+describe("Google Calendar API — updateCalendarEvent", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("envoie une requête PATCH avec le contenu complet fourni", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        id: "evt-1",
+        summary: "Dentiste (décalé)",
+        start: { dateTime: "2026-08-02T16:00:00+02:00", timeZone: "Europe/Paris" },
+        end: { dateTime: "2026-08-02T17:00:00+02:00", timeZone: "Europe/Paris" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const event = await updateCalendarEvent("token", "evt-1", {
+      title: "Dentiste (décalé)",
+      timezone: "Europe/Paris",
+      allDay: false,
+      startDateTime: "2026-08-02T16:00:00+02:00",
+      endDateTime: "2026-08-02T17:00:00+02:00",
+    });
+
+    expect(event).toMatchObject({ id: "evt-1", start: "2026-08-02T16:00:00+02:00" });
+
+    const call = fetchMock.mock.calls[0];
+    if (!call) throw new Error("fetch aurait dû être appelé");
+    expect(call[0]).toBe("https://www.googleapis.com/calendar/v3/calendars/primary/events/evt-1");
+    const options = call[1] as { method: string; body: string };
+    expect(options.method).toBe("PATCH");
+    const sentBody = JSON.parse(options.body);
+    expect(sentBody.summary).toBe("Dentiste (décalé)");
+  });
+
+  it("convertit une fin inclusive en fin exclusive pour un événement journée entière modifié", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        id: "evt-allday",
+        summary: "Anniversaire",
+        start: { date: "2026-08-09" },
+        end: { date: "2026-08-10" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await updateCalendarEvent("token", "evt-allday", {
+      title: "Anniversaire",
+      timezone: "Europe/Paris",
+      allDay: true,
+      startDateTime: "2026-08-09",
+      endDateTime: "2026-08-09",
+    });
+
+    const call = fetchMock.mock.calls[0];
+    if (!call) throw new Error("fetch aurait dû être appelé");
+    const options = call[1] as { body: string };
+    const sentBody = JSON.parse(options.body);
+    expect(sentBody.end).toEqual({ date: "2026-08-10" });
+  });
+
+  it("encode correctement l'identifiant d'événement dans l'URL", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        id: "evt with space",
+        start: { dateTime: "2026-08-02T16:00:00+02:00" },
+        end: { dateTime: "2026-08-02T17:00:00+02:00" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await updateCalendarEvent("token", "evt with space", {
+      title: "Test",
+      timezone: "Europe/Paris",
+      allDay: false,
+      startDateTime: "2026-08-02T16:00:00+02:00",
+      endDateTime: "2026-08-02T17:00:00+02:00",
+    });
+
+    const call = fetchMock.mock.calls[0];
+    if (!call) throw new Error("fetch aurait dû être appelé");
+    expect(call[0] as string).toContain(encodeURIComponent("evt with space"));
+  });
+
+  it("lève GoogleCalendarApiError en cas d'échec (ex: événement introuvable)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse(404, { error: { message: "Not Found" } })),
+    );
+
+    await expect(
+      updateCalendarEvent("token", "unknown-id", {
+        title: "Test",
+        timezone: "Europe/Paris",
+        allDay: false,
+        startDateTime: "2026-08-02T16:00:00+02:00",
+        endDateTime: "2026-08-02T17:00:00+02:00",
+      }),
+    ).rejects.toBeInstanceOf(GoogleCalendarApiError);
+  });
+});
+
+describe("Google Calendar API — deleteCalendarEvent", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("envoie une requête DELETE vers l'événement exact", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(deleteCalendarEvent("token", "evt-1")).resolves.toBeUndefined();
+
+    const call = fetchMock.mock.calls[0];
+    if (!call) throw new Error("fetch aurait dû être appelé");
+    expect(call[0]).toBe("https://www.googleapis.com/calendar/v3/calendars/primary/events/evt-1");
+    const options = call[1] as { method: string; headers: Record<string, string> };
+    expect(options.method).toBe("DELETE");
+    expect(options.headers.Authorization).toBe("Bearer token");
+  });
+
+  it("traite un événement déjà supprimé (410) comme un succès idempotent", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 410 })));
+    await expect(deleteCalendarEvent("token", "evt-already-gone")).resolves.toBeUndefined();
+  });
+
+  it("lève GoogleCalendarApiError sur un échec réel (ex: 401)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse(401, { error: { message: "Invalid Credentials" } })),
+    );
+    await expect(deleteCalendarEvent("token", "evt-1")).rejects.toBeInstanceOf(GoogleCalendarApiError);
+  });
+
+  it("encode correctement l'identifiant d'événement dans l'URL", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await deleteCalendarEvent("token", "evt with space");
+
+    const call = fetchMock.mock.calls[0];
+    if (!call) throw new Error("fetch aurait dû être appelé");
+    expect(call[0] as string).toContain(encodeURIComponent("evt with space"));
   });
 });

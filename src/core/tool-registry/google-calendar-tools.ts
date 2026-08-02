@@ -20,9 +20,11 @@ import {
   type CalendarEventDetail,
   type CalendarEventSummary,
   createCalendarEvent,
+  deleteCalendarEvent,
   getCalendarEvent,
   GoogleCalendarApiError,
   listCalendarEvents,
+  updateCalendarEvent,
 } from "@/core/google-calendar/api";
 
 // ISO 8601 avec offset explicite obligatoire (jamais "Z" implicite par
@@ -148,11 +150,31 @@ const commonCreateEventFields = {
   description: z.string().max(2000).optional(),
 };
 
-// Discriminée sur allDay : un événement horaire exige un ISO 8601 avec
-// offset explicite pour chaque borne ; un événement journée entière exige
-// une date seule. endDateTime y est TOUJOURS inclusif (le dernier jour réel)
-// — la conversion vers la convention exclusive de Google se fait uniquement
-// dans createCalendarEvent, jamais imposée à l'appelant.
+// Partagé entre create_calendar_event et update_calendar_event : un
+// événement horaire exige un ISO 8601 avec offset explicite pour chaque
+// borne ; un événement journée entière exige une date seule. endDateTime y
+// est TOUJOURS inclusif (le dernier jour réel) — la conversion vers la
+// convention exclusive de Google se fait uniquement dans api.ts, jamais
+// imposée à l'appelant.
+function rejectOutOfOrderEventTimes(
+  data: { allDay: boolean; startDateTime: string; endDateTime: string },
+  ctx: z.RefinementCtx,
+): void {
+  const outOfOrder = data.allDay
+    ? data.endDateTime < data.startDateTime
+    : new Date(data.endDateTime).getTime() <= new Date(data.startDateTime).getTime();
+
+  if (outOfOrder) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: data.allDay
+        ? "endDateTime (dernier jour inclus) ne peut pas précéder startDateTime."
+        : "endDateTime doit être strictement postérieur à startDateTime.",
+      path: ["endDateTime"],
+    });
+  }
+}
+
 const createEventInputSchema = z
   .discriminatedUnion("allDay", [
     z
@@ -172,21 +194,7 @@ const createEventInputSchema = z
       })
       .strict(),
   ])
-  .superRefine((data, ctx) => {
-    const outOfOrder = data.allDay
-      ? data.endDateTime < data.startDateTime
-      : new Date(data.endDateTime).getTime() <= new Date(data.startDateTime).getTime();
-
-    if (outOfOrder) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: data.allDay
-          ? "endDateTime (dernier jour inclus) ne peut pas précéder startDateTime."
-          : "endDateTime doit être strictement postérieur à startDateTime.",
-        path: ["endDateTime"],
-      });
-    }
-  });
+  .superRefine(rejectOutOfOrderEventTimes);
 
 const createCalendarEventTool: ToolDefinition<
   z.infer<typeof createEventInputSchema>,
@@ -234,8 +242,111 @@ const createCalendarEventTool: ToolDefinition<
   },
 };
 
+// Remplacement complet du contenu pertinent, jamais un patch partiel : le
+// modèle doit toujours fournir l'état final complet souhaité (en réutilisant
+// les valeurs actuelles obtenues via get_calendar_event pour tout champ non
+// concerné par la modification) — jamais une valeur que le code devrait
+// deviner ou fusionner avec l'existant.
+const updateEventInputSchema = z
+  .discriminatedUnion("allDay", [
+    z
+      .object({
+        eventId: z.string().min(1),
+        allDay: z.literal(false),
+        startDateTime: isoDateTimeWithOffset,
+        endDateTime: isoDateTimeWithOffset,
+        ...commonCreateEventFields,
+      })
+      .strict(),
+    z
+      .object({
+        eventId: z.string().min(1),
+        allDay: z.literal(true),
+        startDateTime: dateOnly,
+        endDateTime: dateOnly,
+        ...commonCreateEventFields,
+      })
+      .strict(),
+  ])
+  .superRefine(rejectOutOfOrderEventTimes);
+
+const updateCalendarEventTool: ToolDefinition<
+  z.infer<typeof updateEventInputSchema>,
+  { event: CalendarEventDetail }
+> = {
+  name: "update_calendar_event",
+  description:
+    "Modifie un événement existant du Google Calendar de l'utilisateur, identifié par son eventId exact (obtenu via list_calendar_events/get_calendar_event). Action à RISQUE EXTERNE : confirmation explicite TOUJOURS exigée. Fournis TOUJOURS l'état final complet souhaité (titre, horaires, fuseau, lieu, description) — pour un champ que l'utilisateur ne veut pas changer, reprends sa valeur actuelle (récupérée au préalable via get_calendar_event), ne laisse jamais un champ vide en espérant qu'il soit conservé. Avant de demander confirmation, présente un résumé AVANT / APRÈS clair. N'invente jamais une valeur manquante ou ambiguë : demande une clarification.",
+  riskLevel: "external",
+  requiredPermission: "update_calendar_event",
+  aiInputSchema: {
+    type: "object",
+    properties: {
+      eventId: { type: "string", description: "Identifiant exact de l'événement à modifier." },
+      title: { type: "string", description: "Titre final souhaité de l'événement." },
+      allDay: { type: "boolean", description: "true pour journée entière, false pour horaire précis." },
+      startDateTime: {
+        type: "string",
+        description:
+          "Si allDay=false : ISO 8601 avec offset explicite. Si allDay=true : date seule YYYY-MM-DD (premier jour).",
+      },
+      endDateTime: {
+        type: "string",
+        description:
+          "Si allDay=false : ISO 8601 avec offset explicite, après startDateTime. Si allDay=true : date seule YYYY-MM-DD, DERNIER JOUR INCLUS.",
+      },
+      timezone: { type: "string", description: "Identifiant de fuseau horaire IANA (ex: Europe/Paris)." },
+      location: { type: "string", description: "Lieu (optionnel)." },
+      description: { type: "string", description: "Description (optionnelle)." },
+    },
+    required: ["eventId", "title", "allDay", "startDateTime", "endDateTime", "timezone"],
+    additionalProperties: false,
+  },
+  parseInput: (raw) => updateEventInputSchema.parse(raw),
+  async execute(input, { userId }) {
+    const event = await withGoogleCalendarErrorHandling(userId, (accessToken) =>
+      updateCalendarEvent(accessToken, input.eventId, input),
+    );
+    return { event };
+  },
+};
+
+const deleteEventInputSchema = z
+  .object({
+    eventId: z.string().min(1),
+  })
+  .strict();
+
+const deleteCalendarEventTool: ToolDefinition<
+  z.infer<typeof deleteEventInputSchema>,
+  { deleted: true; eventId: string }
+> = {
+  name: "delete_calendar_event",
+  description:
+    "Supprime définitivement un événement du Google Calendar de l'utilisateur, identifié par son eventId exact. Action à RISQUE EXTERNE : confirmation explicite TOUJOURS exigée. N'appelle JAMAIS cet outil sur une référence vague (\"le rendez-vous de vendredi\") sans avoir d'abord résolu l'eventId exact via list_calendar_events/get_calendar_event, et présente TOUJOURS le titre et la date/heure exacts de l'événement dans le résumé avant de demander confirmation — l'utilisateur ne doit jamais confirmer une suppression à l'aveugle.",
+  riskLevel: "external",
+  requiredPermission: "delete_calendar_event",
+  aiInputSchema: {
+    type: "object",
+    properties: {
+      eventId: { type: "string", description: "Identifiant exact de l'événement à supprimer." },
+    },
+    required: ["eventId"],
+    additionalProperties: false,
+  },
+  parseInput: (raw) => deleteEventInputSchema.parse(raw),
+  async execute(input, { userId }) {
+    await withGoogleCalendarErrorHandling(userId, (accessToken) =>
+      deleteCalendarEvent(accessToken, input.eventId),
+    );
+    return { deleted: true, eventId: input.eventId };
+  },
+};
+
 export function registerGoogleCalendarTools(): void {
   registerTool(listCalendarEventsTool as ToolDefinition);
   registerTool(getCalendarEventTool as ToolDefinition);
   registerTool(createCalendarEventTool as ToolDefinition);
+  registerTool(updateCalendarEventTool as ToolDefinition);
+  registerTool(deleteCalendarEventTool as ToolDefinition);
 }

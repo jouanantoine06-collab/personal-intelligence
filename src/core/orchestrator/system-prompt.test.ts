@@ -131,3 +131,43 @@ describe("buildSystemPrompt — création d'événement (V1.3c)", () => {
     expect(prompt).toMatch(/N'invente et ne suppose jamais silencieusement/);
   });
 });
+
+describe("buildSystemPrompt — modification et suppression d'événement (V1.3d)", () => {
+  it("inclut toujours les instructions de update_calendar_event et delete_calendar_event", () => {
+    const prompt = buildSystemPrompt({
+      relevantMemories: [],
+      contextState: baseContextState(),
+      outcomeNotes: [],
+      pendingToolConfirmations: [],
+    });
+
+    expect(prompt).toContain("update_calendar_event");
+    expect(prompt).toContain("delete_calendar_event");
+    expect(prompt).toMatch(/risque EXTERNE/);
+  });
+
+  it("exige de récupérer l'événement actuel avant modification et un résumé avant/après", () => {
+    const prompt = buildSystemPrompt({
+      relevantMemories: [],
+      contextState: baseContextState(),
+      outcomeNotes: [],
+      pendingToolConfirmations: [],
+    });
+
+    expect(prompt).toMatch(/état final complet souhaité/);
+    expect(prompt).toMatch(/récupère l'événement actuel via "get_calendar_event"/);
+    expect(prompt).toMatch(/résumé AVANT \/ APRÈS/);
+  });
+
+  it("interdit la suppression sur une référence vague et exige un résumé non aveugle", () => {
+    const prompt = buildSystemPrompt({
+      relevantMemories: [],
+      contextState: baseContextState(),
+      outcomeNotes: [],
+      pendingToolConfirmations: [],
+    });
+
+    expect(prompt).toMatch(/n'appelle JAMAIS cet outil sur une référence vague/);
+    expect(prompt).toMatch(/jamais une confirmation à l'aveugle/);
+  });
+});
